@@ -1,0 +1,7 @@
+{
+  "name": "Jordan Example",
+  "email": "jordan.example@example.com",
+  "role": "field technician",
+  "startDate": "2030-02-03",
+  "managerEmail": "manager@example.com"
+}

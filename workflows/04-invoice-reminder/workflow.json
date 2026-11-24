@@ -1,0 +1,462 @@
+{
+  "name": "Invoice Reminder",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "e8684d39-a72f-53b6-81fb-3c88dd7bb8ad",
+      "name": "Weekdays at 10am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Runs once each weekday."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ACCOUNTING_API_URL }}/invoices/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'unpaid', limit: 500 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "953c5f33-e6cf-59bc-bbe6-54c81225c52a",
+      "name": "Fetch unpaid invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Accounting API"
+        }
+      },
+      "notes": "Reads invoices with a balance."
+    },
+    {
+      "parameters": {
+        "jsCode": "// tier, minimum days overdue, subject line. Negative days means before the due date.\nconst TIERS = [\n  { tier: 1, minDays: -3, subject: 'A quick heads up on invoice' },\n  { tier: 2, minDays: 1, subject: 'Friendly reminder: invoice' },\n  { tier: 3, minDays: 7, subject: 'Past due: invoice' },\n  { tier: 4, minDays: 21, subject: 'Final notice: invoice' },\n];\nconst out = [];\nfor (const item of $input.all()) {\n  for (const inv of item.json.results ?? []) {\n    if (inv.disputed || !inv.email || !(Number(inv.balance) > 0)) continue;\n    const daysOverdue = Math.floor((Date.now() - new Date(inv.dueDate).getTime()) / 86400000);\n    if (Number.isNaN(daysOverdue)) continue;\n    const due = TIERS.filter((t) => daysOverdue >= t.minDays).pop();\n    if (!due || due.tier <= Number(inv.lastReminderTier ?? 0)) continue;\n    out.push({ json: {\n      invoiceId: inv.id,\n      number: inv.number,\n      email: inv.email,\n      firstName: String(inv.customerName ?? '').split(' ')[0] || 'there',\n      balance: Number(inv.balance).toFixed(2),\n      dueDate: inv.dueDate,\n      daysOverdue,\n      tier: due.tier,\n      subject: `${due.subject} ${inv.number}`,\n      isFinal: due.tier === TIERS.length,\n    }});\n  }\n}\nreturn out;\n"
+      },
+      "id": "1bd17019-7cff-5f0b-af39-94307ab60ea3",
+      "name": "Choose reminder tier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Picks the highest tier each invoice has reached and not yet received."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMAIL_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.email, subject: $json.subject, text: `Hi ${$json.firstName},\\n\\nInvoice ${$json.number} for $${$json.balance} ${$json.daysOverdue > 0 ? `was due on ${$json.dueDate} and is ${$json.daysOverdue} days past due` : `is due on ${$json.dueDate}`}. If it is already paid, thank you and please ignore this note.\\n\\n${$env.BUSINESS_NAME}` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "e9d2f50d-844a-5bc6-83f5-2c9ce09c8ce0",
+      "name": "Email reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Email API"
+        }
+      },
+      "notes": "Sends the reminder for the chosen tier."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.ACCOUNTING_API_URL }}/invoices/{{ $('Choose reminder tier').item.json.invoiceId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ lastReminderTier: $('Choose reminder tier').item.json.tier, lastReminderAt: $now.toISO() }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7cf9bccb-e74e-5680-8132-f30f939412b3",
+      "name": "Record reminder on invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Accounting API"
+        }
+      },
+      "notes": "Stores the tier so it is not sent twice."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f995c95e-dc8f-5486-9ec4-7b8a5967fb89",
+              "leftValue": "={{ $('Choose reminder tier').item.json.isFinal }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "01181157-6af8-5538-ba3a-235971853d0b",
+      "name": "Final notice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        300
+      ],
+      "notes": "Only final notices need a person."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAM_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `Final notice sent for invoice ${$('Choose reminder tier').item.json.number} ($${$('Choose reminder tier').item.json.balance}, ${$('Choose reminder tier').item.json.daysOverdue} days past due). Needs a call.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b72ba425-8911-5be4-93c0-58a0a3adfee6",
+      "name": "Tell owner about final notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "Flags the invoice for a phone call."
+    },
+    {
+      "parameters": {},
+      "id": "691740e5-d543-5d50-983c-eddb79e82c1f",
+      "name": "Reminder sent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        500
+      ],
+      "notes": "Earlier tiers end here."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "81a47cae-983a-5295-98b1-096393f84487",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "c37d6c16-1472-5efd-9f80-d3661ef879cc",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "84c07ba0-aaf9-5425-9622-428315799167",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "52e302df-1495-5114-8af5-21cbe92c8ad0",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "3dce5420-27b1-5d48-8547-0b078deea478",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "254e755c-a1c4-52d1-8d3d-dbe054f23a40",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "79fdbd3b-f31b-5e46-a40a-9008de938601",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ebd3c89c-0233-53db-aabc-3c0a8f2cd33f",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7a2d78c7-bec9-5637-8539-3eba662e76f7",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Weekdays at 10am": {
+      "main": [
+        [
+          {
+            "node": "Fetch unpaid invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch unpaid invoices": {
+      "main": [
+        [
+          {
+            "node": "Choose reminder tier",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose reminder tier": {
+      "main": [
+        [
+          {
+            "node": "Email reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email reminder": {
+      "main": [
+        [
+          {
+            "node": "Record reminder on invoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record reminder on invoice": {
+      "main": [
+        [
+          {
+            "node": "Final notice?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final notice?": {
+      "main": [
+        [
+          {
+            "node": "Tell owner about final notice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reminder sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell owner about final notice": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

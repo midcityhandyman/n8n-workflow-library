@@ -1,0 +1,449 @@
+{
+  "name": "Lead Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "f474134a-7171-5022-8bd7-88547617a7da",
+      "name": "Lead webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "514a7529-c931-56b1-8259-1b6f17b2af56",
+      "notes": "Receives the lead as JSON."
+    },
+    {
+      "parameters": {
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\nreturn $input.all().map((item) => {\n  const body = item.json.body ?? item.json;\n  const phone = toE164(body.phone);\n  const email = String(body.email ?? '').trim().toLowerCase();\n  const day = new Date().toISOString().slice(0, 10);\n  return { json: {\n    name: String(body.name ?? '').trim(),\n    phone,\n    email,\n    service: String(body.service ?? 'general').trim(),\n    message: String(body.message ?? '').trim().slice(0, 1000),\n    source: String(body.source ?? 'web').trim(),\n    receivedAt: new Date().toISOString(),\n    dedupeKey: `${phone || email}:${day}`,\n    hasContact: Boolean(phone || email),\n    hasPhone: Boolean(phone),\n  }};\n});\n"
+      },
+      "id": "a3c6eaa9-fef8-58f3-8f88-3810d28aaf47",
+      "name": "Normalize lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Trims fields, converts the phone to E.164, lowercases the email and builds a dedupe key."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "43b642df-199f-59da-a230-9c5efb456609",
+              "leftValue": "={{ $json.hasContact }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "48544318-0d75-5c4c-a9c1-0e466a34ecb6",
+      "name": "Has a way to reach them?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "No phone and no email means nobody can follow up. Those go to the dead letter path."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/contacts/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $json.name, phone: $json.phone, email: $json.email, source: $json.source, service: $json.service, message: $json.message, dedupeKey: $json.dedupeKey }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "14fd5866-1e24-58bc-b38b-29d44a2fe081",
+      "name": "Upsert CRM contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Creates or updates the contact and opens a lead record."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fa4b1c14-0aec-5d44-b8e0-8e62ec9b9012",
+              "leftValue": "={{ $('Normalize lead').item.json.hasPhone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fdae1cc3-45db-5bcb-a8dc-e62890b790c9",
+      "name": "Has a mobile number?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Email only leads skip the text."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Normalize lead').item.json.phone, from: $env.BUSINESS_PHONE, body: `Hi ${$('Normalize lead').item.json.name.split(' ')[0] || 'there'}, thanks for reaching out to ${$env.BUSINESS_NAME}. We got your request and will call you shortly. Reply STOP to opt out.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "359c1832-3e26-5b21-b1aa-bda42fad4b75",
+      "name": "Text acknowledgement to lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Lets the lead know the request landed and a person will call."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAM_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `New lead: ${$('Normalize lead').item.json.name} wants ${$('Normalize lead').item.json.service} (via ${$('Normalize lead').item.json.source})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "97dee534-8937-5298-b674-edf6779d386d",
+      "name": "Notify office channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "Posts the lead to the office chat so it gets claimed."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "79c59508-8967-50fe-9378-5dcb38577228",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "20a83dc6-3740-5403-a631-2547fa9a5a31",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "0ef6e374-ba25-5dff-bb2c-a3867053e95b",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "904945af-ce53-55e4-8a68-bb0f45a0904c",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "edeb7a7d-c2b4-5b4f-b6d7-bd19984f6e8c",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "385df410-b350-5799-a734-74be58cd157c",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "513f8152-567e-57de-8971-b633f0ba0bea",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        560
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1822882c-01b3-59e2-bdcf-46047880f393",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b97f6553-86f4-5cf5-a989-07cf58288754",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Lead webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize lead": {
+      "main": [
+        [
+          {
+            "node": "Has a way to reach them?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has a way to reach them?": {
+      "main": [
+        [
+          {
+            "node": "Upsert CRM contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert CRM contact": {
+      "main": [
+        [
+          {
+            "node": "Has a mobile number?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has a mobile number?": {
+      "main": [
+        [
+          {
+            "node": "Text acknowledgement to lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify office channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text acknowledgement to lead": {
+      "main": [
+        [
+          {
+            "node": "Notify office channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify office channel": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

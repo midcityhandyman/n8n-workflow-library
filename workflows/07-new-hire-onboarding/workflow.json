@@ -1,0 +1,447 @@
+{
+  "name": "New Hire Onboarding",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-hire",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1924d7cd-c9ea-57ae-95e7-0de4b49df680",
+      "name": "New hire form webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "f2286beb-5064-58e0-96ca-c6a8a0f82eaa",
+      "notes": "Receives the submitted form."
+    },
+    {
+      "parameters": {
+        "jsCode": "const TEMPLATE = [\n  { title: 'Collect signed offer and tax forms', owner: 'office', dueInDays: -3 },\n  { title: 'Create email and scheduling app logins', owner: 'office', dueInDays: -2 },\n  { title: 'Order uniform and safety gear', owner: 'office', dueInDays: -2, roles: ['field technician'] },\n  { title: 'Assign vehicle and tablet', owner: 'manager', dueInDays: 0, roles: ['field technician'] },\n  { title: 'Safety orientation', owner: 'manager', dueInDays: 0 },\n  { title: 'First week ride along schedule', owner: 'manager', dueInDays: 1, roles: ['field technician'] },\n  { title: '30 day check in', owner: 'manager', dueInDays: 30 },\n];\nconst DAY = 86400000;\nreturn $input.all().map((item) => {\n  const body = item.json.body ?? item.json;\n  const start = new Date(body.startDate);\n  const complete = Boolean(body.name && body.email && body.role && body.managerEmail)\n    && !Number.isNaN(start.getTime());\n  const tasks = !complete ? [] : TEMPLATE\n    .filter((t) => !t.roles || t.roles.includes(body.role))\n    .map((t) => ({\n      title: `${t.title}: ${body.name}`,\n      owner: t.owner === 'manager' ? body.managerEmail : 'office',\n      dueDate: new Date(start.getTime() + t.dueInDays * DAY).toISOString().slice(0, 10),\n    }));\n  return { json: {\n    name: String(body.name ?? '').trim(),\n    email: String(body.email ?? '').trim().toLowerCase(),\n    role: String(body.role ?? '').trim(),\n    managerEmail: String(body.managerEmail ?? '').trim().toLowerCase(),\n    startDate: complete ? start.toISOString().slice(0, 10) : '',\n    complete,\n    tasks,\n  }};\n});\n"
+      },
+      "id": "b7d5b698-a413-5232-ab1d-72ac98e2b2ab",
+      "name": "Build onboarding plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Validates the form and expands the checklist template into dated tasks."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "24127b7e-05e9-5ee8-b51d-7bf995de05e6",
+              "leftValue": "={{ $json.complete }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "504b9aca-87c7-51e3-93cc-ebfedd529f78",
+      "name": "Form complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Incomplete forms go to the dead letter path."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HR_API_URL }}/employees",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $json.name, email: $json.email, role: $json.role, startDate: $json.startDate, managerEmail: $json.managerEmail, externalKey: `${$json.email}:${$json.startDate}` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "967d7932-82b2-593d-a4ba-a59264ae124e",
+      "name": "Create HR record",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HR system API"
+        }
+      },
+      "notes": "Creates the employee record."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HR_API_URL }}/tasks/bulk",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ employeeId: $json.id, externalKey: `onboarding:${$('Build onboarding plan').item.json.email}`, tasks: $('Build onboarding plan').item.json.tasks }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "58d6930c-67e3-5dd7-9f9b-e5ea08a8977d",
+      "name": "Create onboarding tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HR system API"
+        }
+      },
+      "notes": "Creates every checklist task in one call."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMAIL_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Build onboarding plan').item.json.email, subject: `Welcome to ${$env.BUSINESS_NAME}`, text: `Hi ${$('Build onboarding plan').item.json.name.split(' ')[0]},\\n\\nWelcome aboard. Your first day is ${$('Build onboarding plan').item.json.startDate}. Please arrive at 7:30 with a photo ID. Your manager will meet you at the shop and walk you through the first week.\\n\\n${$env.BUSINESS_NAME}` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ce8ce74c-11d5-5457-a3e7-3fd589541c9b",
+      "name": "Email welcome packet",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Email API"
+        }
+      },
+      "notes": "Sends first day details to the new hire."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAM_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `${$('Build onboarding plan').item.json.name} starts as ${$('Build onboarding plan').item.json.role} on ${$('Build onboarding plan').item.json.startDate}. ${$('Build onboarding plan').item.json.tasks.length} onboarding tasks created.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ccb17b79-3d27-52b3-8e13-5dd452b8da4d",
+      "name": "Notify manager in team chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "Tells the team who is starting and when."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8e39fa94-7f27-5ef1-97f6-f70c6c283603",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "b33073cd-2238-5c28-84c7-fda7ff177e09",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "565a3551-6d2a-5e09-a29e-913d87cca4f1",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "cc37a997-5514-5248-8f2b-820ad8f129f0",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "b8407b30-536e-5f20-8fff-0b4bd1269deb",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "bb0c1b15-147c-538c-b38b-4856aaadd9e4",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4bf0f96d-47a6-5393-ac4f-187497e5efd6",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        560
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "216d9771-868b-517d-804e-f410bf265cc0",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "017ff189-86cc-57cd-89f4-e87e239aef1a",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "New hire form webhook": {
+      "main": [
+        [
+          {
+            "node": "Build onboarding plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build onboarding plan": {
+      "main": [
+        [
+          {
+            "node": "Form complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form complete?": {
+      "main": [
+        [
+          {
+            "node": "Create HR record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HR record": {
+      "main": [
+        [
+          {
+            "node": "Create onboarding tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create onboarding tasks": {
+      "main": [
+        [
+          {
+            "node": "Email welcome packet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email welcome packet": {
+      "main": [
+        [
+          {
+            "node": "Notify manager in team chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify manager in team chat": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

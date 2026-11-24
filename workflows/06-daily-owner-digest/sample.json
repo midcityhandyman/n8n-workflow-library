@@ -1,0 +1,29 @@
+{
+  "leads": {
+    "results": [
+      {
+        "name": "Alex Sample",
+        "service": "bathroom remodel",
+        "source": "website"
+      }
+    ]
+  },
+  "jobs": {
+    "results": [
+      {
+        "startTime": "08:00",
+        "title": "Tub to shower conversion",
+        "crew": "Crew A"
+      }
+    ]
+  },
+  "invoices": {
+    "results": [
+      {
+        "number": "2001",
+        "balance": 1250.0,
+        "dueDate": "2030-01-10"
+      }
+    ]
+  }
+}

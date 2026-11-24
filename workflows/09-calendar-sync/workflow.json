@@ -1,0 +1,452 @@
+{
+  "name": "Calendar Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "dae72faf-3261-55f2-8750-2fe4eefe3018",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Polls for changes."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/jobs/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ updatedAfter: $now.minus({ minutes: 20 }).toISO(), limit: 200 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "96dfa42b-e633-547d-bb61-66e2d8d208cc",
+      "name": "Fetch jobs changed recently",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Jobs updated in the last 20 minutes."
+    },
+    {
+      "parameters": {
+        "jsCode": "const DEFAULT_HOURS = 2;\nconst out = [];\nfor (const item of $input.all()) {\n  for (const job of item.json.results ?? []) {\n    const start = new Date(job.scheduledStart);\n    if (!job.scheduledStart || Number.isNaN(start.getTime())) continue; // unscheduled jobs have no event\n    const end = job.scheduledEnd ? new Date(job.scheduledEnd) : new Date(start.getTime() + DEFAULT_HOURS * 3600000);\n    const cancelled = job.status === 'cancelled';\n    out.push({ json: {\n      jobId: job.id,\n      eventId: job.calendarEventId ?? '',\n      hasEvent: Boolean(job.calendarEventId),\n      event: {\n        title: `${cancelled ? 'CANCELLED: ' : ''}${job.title} (${job.customerName})`,\n        start: start.toISOString(),\n        end: end.toISOString(),\n        location: job.siteAddress ?? '',\n        description: `Job ${job.id}. Crew: ${job.crew ?? 'unassigned'}.`,\n        externalKey: `job-${job.id}`,\n      },\n    }});\n  }\n}\nreturn out;\n"
+      },
+      "id": "958f6d99-2bf1-5585-a01e-f8f569b05d8a",
+      "name": "Map jobs to calendar events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Builds one calendar event payload per scheduled job."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "32e0d905-8dd3-5f84-9e02-4b9b512d3bd3",
+              "leftValue": "={{ $json.hasEvent }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "54b638d7-4d84-5b9d-ae5b-b5d329d70ed2",
+      "name": "Already on the calendar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        300
+      ],
+      "notes": "Chooses update or create."
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.CALENDAR_API_URL }}/events/{{ $json.eventId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.event) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "9335cbde-b1e7-5b80-853b-7a83ea6e09fc",
+      "name": "Update calendar event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Calendar API"
+        }
+      },
+      "notes": "Replaces the event with the current job details."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CALENDAR_API_URL }}/events",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.event) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "71636986-1158-5e8b-a77e-ae17dd5f5f90",
+      "name": "Create calendar event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Calendar API"
+        }
+      },
+      "notes": "Creates the event."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/jobs/{{ $('Map jobs to calendar events').item.json.jobId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ calendarEventId: $json.id }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "122ff4d8-48e0-5fa1-94c2-a547ad64efad",
+      "name": "Save event id on job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Stores the new event id so the next change is an update."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e724e6be-0fdb-5bc9-be21-980f2f11d384",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "603ad5db-2ae8-50a1-93b9-1bc302793fb3",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "f64b66fd-b832-5b9f-9f35-801aa5ae683a",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "016f659c-c6a0-5fa4-a906-335a10f6f1b9",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "c8929add-0be2-570b-bb44-0d01cbbc2089",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "fac4d1bc-7137-5afc-9f5a-a8b9d3eac018",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1ba03f3d-dba5-5889-81ea-dbe82d161b00",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b322af46-0255-5bf9-ac74-dbfa0ff58046",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fe52c0d4-c23d-5c80-8344-290718385a34",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch jobs changed recently",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch jobs changed recently": {
+      "main": [
+        [
+          {
+            "node": "Map jobs to calendar events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map jobs to calendar events": {
+      "main": [
+        [
+          {
+            "node": "Already on the calendar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already on the calendar?": {
+      "main": [
+        [
+          {
+            "node": "Update calendar event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create calendar event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create calendar event": {
+      "main": [
+        [
+          {
+            "node": "Save event id on job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update calendar event": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save event id on job": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

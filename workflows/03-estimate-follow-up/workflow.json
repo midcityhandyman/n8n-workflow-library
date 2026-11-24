@@ -1,0 +1,354 @@
+{
+  "name": "Estimate Follow Up",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "2d58e3b9-44bc-5452-bc21-fea2527e4ac2",
+      "name": "Weekdays at 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Runs once each weekday morning."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/estimates/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'sent', limit: 200 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "120c4632-a1db-51d8-ab6e-f7965439935d",
+      "name": "Fetch open estimates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Reads estimates that are sent and not yet accepted or declined."
+    },
+    {
+      "parameters": {
+        "jsCode": "const CADENCE = [2, 5, 10]; // days after the estimate was sent\nconst out = [];\nfor (const item of $input.all()) {\n  for (const est of item.json.results ?? []) {\n    const step = Number(est.followUpsSent ?? 0);\n    if (est.optedOut || !est.phone || step >= CADENCE.length) continue;\n    const days = Math.floor((Date.now() - new Date(est.sentAt).getTime()) / 86400000);\n    if (Number.isNaN(days) || days < CADENCE[step]) continue;\n    out.push({ json: {\n      estimateId: est.id,\n      firstName: String(est.customerName ?? '').split(' ')[0] || 'there',\n      phone: est.phone,\n      step: step + 1,\n      isLast: step === CADENCE.length - 1,\n    }});\n  }\n}\nreturn out; // no items means nothing is due and the run ends here\n"
+      },
+      "id": "3ddf2fbf-9c33-5390-842d-241fa7d3a2cf",
+      "name": "Pick follow ups due today",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Emits one item per estimate whose next nudge is due."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.phone, from: $env.BUSINESS_PHONE, body: $json.isLast ? `Hi ${$json.firstName}, last note from ${$env.BUSINESS_NAME} about your estimate. If the timing is not right, no problem. Reply any time and we will pick it back up.` : `Hi ${$json.firstName}, it is ${$env.BUSINESS_NAME}. Any questions on the estimate we sent? Happy to walk through it or adjust the scope.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "83426a65-96b5-5a90-9eba-00bd06d8cc95",
+      "name": "Send follow up text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Sends the nudge for this step."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/estimates/{{ $('Pick follow ups due today').item.json.estimateId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ followUpsSent: $('Pick follow ups due today').item.json.step, lastFollowUpAt: $now.toISO() }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ea4cd6dc-323b-5073-a1f5-332894fb5a2c",
+      "name": "Record follow up on estimate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Bumps the follow up counter so the same step is not sent again."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e7e5769d-0a16-5dac-b60e-471a32ce10b8",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "4a552904-e575-598d-8e02-5af408fdbfde",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "0c6af0f6-34c1-5051-86d1-79242af1f906",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "4e1900a1-c337-5b97-a0ef-d63de62c6083",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "e28af173-8f82-5c15-90d4-a74a33917282",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "9b1c37f5-04bc-5fe6-a167-f153a929742f",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "be32d3a4-f9d7-5d68-851a-6d45c7337ce8",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        560
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "f7a0f405-6100-50ac-9ffd-a824d83ad851",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "aa3e0c1f-f47f-59c7-814a-02eff2d43f49",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Weekdays at 9am": {
+      "main": [
+        [
+          {
+            "node": "Fetch open estimates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch open estimates": {
+      "main": [
+        [
+          {
+            "node": "Pick follow ups due today",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick follow ups due today": {
+      "main": [
+        [
+          {
+            "node": "Send follow up text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send follow up text": {
+      "main": [
+        [
+          {
+            "node": "Record follow up on estimate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record follow up on estimate": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

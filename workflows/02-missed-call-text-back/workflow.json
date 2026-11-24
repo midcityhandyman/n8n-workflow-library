@@ -1,0 +1,468 @@
+{
+  "name": "Missed Call Text Back",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "missed-call",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "072edeb1-8b37-527a-80f9-df897c59378c",
+      "name": "Call status webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "df6bfb3c-13b4-5a17-9145-bed03e1923bf",
+      "notes": "Receives one event per finished call."
+    },
+    {
+      "parameters": {
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\nconst MISSED = ['no-answer', 'busy', 'failed', 'canceled'];\nreturn $input.all().map((item) => {\n  const body = item.json.body ?? item.json;\n  const from = toE164(body.from);\n  const hour = $now.hour; // workflow timezone\n  return { json: {\n    callId: String(body.callId ?? ''),\n    from,\n    status: String(body.status ?? ''),\n    shouldText: MISSED.includes(body.status) && from !== '' && body.direction !== 'outbound',\n    afterHours: hour < 8 || hour >= 18,\n  }};\n});\n"
+      },
+      "id": "e7a9a06f-ced4-57e8-8594-7337860bc84a",
+      "name": "Normalize call event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Decides whether this call was a missed inbound call from a textable number."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "db22ca2d-53e0-5e1e-8cd1-321f0892e848",
+              "leftValue": "={{ $json.shouldText }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c8192188-91da-5533-a07a-ed80ee87c8c6",
+      "name": "Missed inbound call?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Answered and outbound calls stop here."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/activities/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.from, type: 'missed_call_text', sinceMinutes: 60 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "645b32e9-7e14-52b9-87a5-520232eeddbe",
+      "name": "Look up recent text backs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Asks the CRM whether this caller was already texted in the last hour."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "29fb95c9-1de7-5daa-b619-6ac1c8cda7c3",
+              "leftValue": "={{ ($json.results ?? []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "50300b98-5aff-5d05-9afb-e000106d5112",
+      "name": "First miss this hour?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Stops repeat dialers from getting a text for every attempt."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Normalize call event').item.json.from, from: $env.BUSINESS_PHONE, body: $('Normalize call event').item.json.afterHours ? `Sorry we missed you. ${$env.BUSINESS_NAME} is closed right now. Text us what you need and we will call you first thing in the morning.` : `Sorry we missed your call. This is ${$env.BUSINESS_NAME}. What can we help with? We will call you right back.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "da886f15-2b6f-5b47-a9cb-71a618a5dfcb",
+      "name": "Send text back",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Texts the caller."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/activities",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Normalize call event').item.json.from, type: 'missed_call_text', callId: $('Normalize call event').item.json.callId }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "c6292514-d05c-5426-9a68-4d0f2c364d75",
+      "name": "Log text back in CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Records the text so the one hour check works and the office can see it."
+    },
+    {
+      "parameters": {},
+      "id": "63c36ac0-bbe4-5f71-86fd-fe542ed2fbc6",
+      "name": "Nothing to send",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        500
+      ],
+      "notes": "Answered call, outbound call, or caller already texted."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c43fd3ec-0909-59f2-bfe6-88449bdff2df",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "ef4701e3-a645-58d1-bc77-5d28a52bde03",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "23584a7e-19e1-5fd6-bac7-8cb9e5872473",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "44406070-d5f6-546c-8187-45671611836c",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "1663687e-7c87-5c31-bf14-9cdaa666dcf5",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "0342b0fb-d671-555d-8e49-06a2e1e09afc",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9c195262-8918-5397-a25b-4e67fb339ee3",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "5c2a7ef3-f4b9-5046-a2bd-53dd0aecc446",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "2dd56656-e318-5dfa-8be3-2abf5ba87abf",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Call status webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize call event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize call event": {
+      "main": [
+        [
+          {
+            "node": "Missed inbound call?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Missed inbound call?": {
+      "main": [
+        [
+          {
+            "node": "Look up recent text backs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up recent text backs": {
+      "main": [
+        [
+          {
+            "node": "First miss this hour?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First miss this hour?": {
+      "main": [
+        [
+          {
+            "node": "Send text back",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send text back": {
+      "main": [
+        [
+          {
+            "node": "Log text back in CRM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log text back in CRM": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "id": "inv-2001",
+      "number": "2001",
+      "customerName": "Alex Sample",
+      "email": "alex.sample@example.com",
+      "balance": 1250.0,
+      "dueDate": "2030-01-10",
+      "lastReminderTier": 0,
+      "disputed": false
+    }
+  ]
+}

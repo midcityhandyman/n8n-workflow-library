@@ -1,0 +1,7 @@
+{
+  "callId": "call-0001",
+  "from": "+15555550143",
+  "to": "+15555550100",
+  "direction": "inbound",
+  "status": "no-answer"
+}

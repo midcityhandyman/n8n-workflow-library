@@ -1,0 +1,10 @@
+{
+  "jobId": "job-3001",
+  "customerId": "cus-501",
+  "customerName": "Alex Sample",
+  "phone": "+15555550142",
+  "paid": true,
+  "openComplaint": false,
+  "lastReviewRequestAt": null,
+  "smsOptOut": false
+}

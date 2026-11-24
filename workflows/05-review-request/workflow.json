@@ -1,0 +1,365 @@
+{
+  "name": "Review Request",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-completed",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1c8b59c1-9930-56d2-b2fb-ba39a5f159d8",
+      "name": "Job completed webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "dc076c72-ba0d-5825-9daf-a191494793e6",
+      "notes": "Receives the finished job."
+    },
+    {
+      "parameters": {
+        "jsCode": "const COOL_DOWN_DAYS = 90;\nreturn $input.all().map((item) => {\n  const job = item.json.body ?? item.json;\n  const last = job.lastReviewRequestAt ? new Date(job.lastReviewRequestAt).getTime() : 0;\n  const daysSince = last ? (Date.now() - last) / 86400000 : Infinity;\n  let reason = '';\n  if (!job.phone) reason = 'no phone number';\n  else if (job.smsOptOut) reason = 'customer opted out of texts';\n  else if (!job.paid) reason = 'job is not paid yet';\n  else if (job.openComplaint) reason = 'open complaint on the job';\n  else if (daysSince < COOL_DOWN_DAYS) reason = 'asked recently';\n  return { json: {\n    jobId: job.jobId,\n    customerId: job.customerId,\n    firstName: String(job.customerName ?? '').split(' ')[0] || 'there',\n    phone: job.phone ?? '',\n    eligible: reason === '',\n    reason,\n  }};\n});\n"
+      },
+      "id": "b69093b2-2b3e-54d1-ae7e-7a7c59656a26",
+      "name": "Check eligibility",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Applies the rules and records the reason when a job is skipped."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e798abf6-339d-5676-9db0-2985ba9699a8",
+              "leftValue": "={{ $json.eligible }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b8b56b24-4a76-53cc-bb65-484f5020d990",
+      "name": "Eligible for a review request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Skipped jobs end quietly."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.phone, from: $env.BUSINESS_PHONE, body: `Hi ${$json.firstName}, thanks for choosing ${$env.BUSINESS_NAME}. If we earned it, a quick review helps a small business a lot: ${$env.REVIEW_LINK}` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "45dd70a8-aad5-5cb4-a250-170d314ecaf8",
+      "name": "Send review request text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Sends the ask with the review link."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/contacts/{{ $('Check eligibility').item.json.customerId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ lastReviewRequestAt: $now.toISO(), lastReviewRequestJobId: $('Check eligibility').item.json.jobId }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "10c82ceb-6eda-523f-af47-783e7da8e956",
+      "name": "Stamp review requested",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Stores the date so the cool down works."
+    },
+    {
+      "parameters": {},
+      "id": "b9ef0e8b-ba6e-5a90-b522-fbf0bc7ba406",
+      "name": "Skip review request",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        720,
+        500
+      ],
+      "notes": "Not eligible. The reason is on the item."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4218798c-93ee-5594-bbc8-1965746244d2",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "736a3e73-26fa-5f2e-a049-7ec396d706d8",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "7a5c06b5-1469-5fb2-942e-24436853c3ca",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "8ae21ef3-a26d-5347-aef5-0b2152827ec6",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "ade51d0c-0e02-50f2-b543-705997275d04",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "d0dd4d96-065b-55f9-b768-c74bda236ac3",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "77be597c-4315-5201-852f-5e573380f6f5",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "0322ec72-c996-5079-ba7c-0cd34d49d1ee",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "8b61187b-4a7f-5f27-9eac-209ae39f9a82",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Job completed webhook": {
+      "main": [
+        [
+          {
+            "node": "Check eligibility",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check eligibility": {
+      "main": [
+        [
+          {
+            "node": "Eligible for a review request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eligible for a review request?": {
+      "main": [
+        [
+          {
+            "node": "Send review request text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip review request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send review request text": {
+      "main": [
+        [
+          {
+            "node": "Stamp review requested",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp review requested": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

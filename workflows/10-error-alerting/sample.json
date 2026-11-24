@@ -1,0 +1,15 @@
+{
+  "execution": {
+    "id": "231",
+    "url": "https://n8n.example.com/execution/231",
+    "error": {
+      "message": "The service refused the connection"
+    },
+    "lastNodeExecuted": "Dead letter: alert owner",
+    "mode": "trigger"
+  },
+  "workflow": {
+    "id": "1",
+    "name": "Lead Intake"
+  }
+}

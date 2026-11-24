@@ -1,0 +1,78 @@
+
+1. Validate the library
+=======================
+PASS  workflows/01-lead-intake/workflow.json
+PASS  workflows/02-missed-call-text-back/workflow.json
+PASS  workflows/03-estimate-follow-up/workflow.json
+PASS  workflows/04-invoice-reminder/workflow.json
+PASS  workflows/05-review-request/workflow.json
+PASS  workflows/06-daily-owner-digest/workflow.json
+PASS  workflows/07-new-hire-onboarding/workflow.json
+PASS  workflows/08-form-to-crm/workflow.json
+PASS  workflows/09-calendar-sync/workflow.json
+PASS  workflows/10-error-alerting/workflow.json
+
+10 of 10 workflows passed, 16 rules each
+
+2. Where does a failed item go?
+===============================
+Lead Intake  (workflows/01-lead-intake/workflow.json)
+  main path : Lead webhook -> Normalize lead -> Has a way to reach them? -> Upsert CRM contact -> Has a mobile number? -> Text acknowledgement to lead -> Notify office channel
+  on failure: Upsert CRM contact (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
+  on failure: Text acknowledgement to lead (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
+  on failure: Notify office channel (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
+  last resort: settings.errorWorkflow = REPLACE_WITH_ERROR_WORKFLOW_ID
+
+Error Alerting  (workflows/10-error-alerting/workflow.json)
+  main path : On any workflow error -> Format alert -> Post alert to alerts channel -> Customer facing workflow? -> Text owner
+  on failure: Post alert to alerts channel (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: email owner as last resort
+  on failure: Text owner (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: email owner as last resort
+  last resort: settings.errorWorkflow = (none)
+
+
+3. Break a copy of Lead Intake on purpose
+=========================================
+
+CAUGHT  Retries switched off on an API call  (expects ERR-01: Nodes that call outside systems retry (2 to 5 tries, 1 to 5 second wait))
+        ERR-01 [Upsert CRM contact]: retryOnFail must be true
+
+CAUGHT  Error output left unconnected  (expects ERR-02: Nodes that call outside systems route failures to a wired error output)
+        ERR-02 [Upsert CRM contact]: error output is not connected to anything
+
+CAUGHT  On Error left at the default (stop workflow)  (expects ERR-02: Nodes that call outside systems route failures to a wired error output)
+        ERR-02 [Upsert CRM contact]: onError must be 'continueErrorOutput'
+
+CAUGHT  Dead letter store deleted  (expects ERR-03: Every error output leads to a dead letter node that stores the failed item)
+        ERR-03 [Upsert CRM contact]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
+        ERR-03 [Text acknowledgement to lead]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
+        ERR-03 [Notify office channel]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
+
+CAUGHT  Error workflow setting removed  (expects ERR-04: Workflow names an error workflow or is itself an Error Trigger workflow)
+        ERR-04: settings.errorWorkflow is not set
+
+CAUGHT  Authorization header pasted in from a cURL import  (expects CRED-03: Sensitive fields (password, token, Authorization...) hold expressions, not literals)
+        CRED-03 [Upsert CRM contact]: parameters.headerParameters.parameters[0] sets 'Authorization' to a literal value
+        CRED-02 [Upsert CRM contact]: looks like a literal Bearer token: Bearer...
+
+CAUGHT  API key typed into a URL  (expects CRED-02: No string looks like a key, token, password or URL with a login in it)
+        CRED-02 [Upsert CRM contact]: looks like a secret in a URL query string: ?api_k...
+
+CAUGHT  Credential data inlined instead of referenced  (expects CRED-01: Credential references carry only an id and a name)
+        CRED-01 [Upsert CRM contact]: credential 'httpHeaderAuth' must be a reference with only id and name
+
+CAUGHT  Connection points at a node that was renamed  (expects STRUCT-04: Connections only reference nodes that exist and use the main[][] shape)
+        STRUCT-04 [Lead webhook]: main[0] points at unknown node 'Node that does not exist'
+
+CAUGHT  Two nodes share a name  (expects STRUCT-03: Node ids and node names are unique)
+        STRUCT-03 [Normalize lead]: node name is used more than once
+        STRUCT-04 [Normalize lead]: main[0] points at unknown node 'Has a way to reach them?'
+        STRUCT-04 [Has a way to reach them?]: connection source is not a node in this workflow
+
+CAUGHT  Exported while active with pinned test data  (expects STRUCT-07: Workflow ships inactive with no pinned or static data)
+        STRUCT-07: library workflows ship with active=false; activate after import
+        STRUCT-07: pinData is not empty; pinned data can leak real records
+
+CAUGHT  Expression with a missing brace  (expects STRUCT-08: Expressions have matching {{ and }} pairs)
+        STRUCT-08 [Upsert CRM contact]: unbalanced expression braces in: ={{ $env.CRM_BASE_URL }/contacts
+
+12 of 12 breakages caught

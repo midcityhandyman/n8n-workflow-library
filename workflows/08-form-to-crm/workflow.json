@@ -1,0 +1,519 @@
+{
+  "name": "Form to CRM",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "website-form",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "f0cabd33-38d1-5c54-bdbd-3e460c4e5633",
+      "name": "Website form webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "7920f993-5aa7-5f9d-a0f2-5417d6062d28",
+      "notes": "Receives the form submission."
+    },
+    {
+      "parameters": {
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\n// form field name -> CRM field name\nconst FIELD_MAP = {\n  full_name: 'name',\n  email_address: 'email',\n  phone_number: 'phone',\n  project_type: 'service',\n  details: 'message',\n  page_url: 'sourceUrl',\n};\nreturn $input.all().map((item) => {\n  const body = item.json.body ?? item.json;\n  const contact = {};\n  for (const [formField, crmField] of Object.entries(FIELD_MAP)) {\n    contact[crmField] = String(body[formField] ?? '').trim();\n  }\n  contact.email = contact.email.toLowerCase();\n  contact.phone = toE164(contact.phone);\n  const looksHuman = String(body.website ?? '') === ''\n    && /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(contact.email)\n    && !/https?:\\/\\//i.test(contact.message);\n  return { json: { ...contact, looksHuman } };\n});\n"
+      },
+      "id": "fa2b166f-7afb-5458-ab19-9c195a71f091",
+      "name": "Map form fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Renames fields, cleans phone and email, and runs the spam checks."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ddb0205f-7dff-5ee2-ae37-f25b8dcddab8",
+              "leftValue": "={{ $json.looksHuman }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bccffe42-14a4-5de8-ad7d-d24b8f7aac13",
+      "name": "Passed spam check?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Honeypot filled, bad email or links in the message."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ email: $json.email, limit: 1 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "d5a38986-b6f1-565f-a16d-bc48cd878210",
+      "name": "Find contact by email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Looks for an existing contact."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6c0c069f-f136-5f79-b4bc-f003980a75ef",
+              "leftValue": "={{ ($json.results ?? []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c972c61e-e727-5363-bb68-2343fbcfbe37",
+      "name": "Contact exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Chooses update or create."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.CRM_BASE_URL }}/contacts/{{ $json.results[0].id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Map form fields').item.json.phone || undefined, lastInboundAt: $now.toISO() }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "0dcb7ca5-bedd-51e6-a598-82c9e878b68a",
+      "name": "Update contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Refreshes phone and last contact date on the existing record."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/contacts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $('Map form fields').item.json.name, email: $('Map form fields').item.json.email, phone: $('Map form fields').item.json.phone, source: 'website form', sourceUrl: $('Map form fields').item.json.sourceUrl }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "dbb08bcd-bbe1-5d42-9cbd-63651479ac92",
+      "name": "Create contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Creates the contact."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/deals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contactId: $json.id, stage: 'new', title: `${$('Map form fields').item.json.service || 'General'} request from ${$('Map form fields').item.json.name}`, notes: $('Map form fields').item.json.message }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "48311580-2e01-5e30-9a43-9ebd25d9792b",
+      "name": "Create deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Opens a deal linked to the contact."
+    },
+    {
+      "parameters": {},
+      "id": "463bd3d6-2497-592b-bf6c-7a248e5c8286",
+      "name": "Discard spam",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        720,
+        500
+      ],
+      "notes": "Bot submissions end here on purpose. They are not errors."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d3f7a79d-3481-5c1e-8c9f-12698bf6a9f9",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "1ac153d0-4289-52ee-b0d5-0febd378d114",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "805cc670-fb32-5b82-9340-2cf57773ec25",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "080023b0-3fd1-5c3b-a167-b3324a712b24",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "8b73499b-0e34-575b-b5f5-529dd7b23b9c",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "89b0631d-ab4b-53cb-a605-ca75e6025428",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2aeb391f-0241-5f5a-b8e9-f8b75aa026c3",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "7655fca1-0bf9-5461-8422-7c1caa7775b2",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "12392375-b80c-57f1-a575-16f2a4bfd94e",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Website form webhook": {
+      "main": [
+        [
+          {
+            "node": "Map form fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map form fields": {
+      "main": [
+        [
+          {
+            "node": "Passed spam check?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Passed spam check?": {
+      "main": [
+        [
+          {
+            "node": "Find contact by email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discard spam",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find contact by email": {
+      "main": [
+        [
+          {
+            "node": "Contact exists?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact exists?": {
+      "main": [
+        [
+          {
+            "node": "Update contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update contact": {
+      "main": [
+        [
+          {
+            "node": "Create deal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create contact": {
+      "main": [
+        [
+          {
+            "node": "Create deal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create deal": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

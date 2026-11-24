@@ -1,0 +1,358 @@
+{
+  "name": "Error Alerting",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4c57a27f-b048-5327-b7f4-af99a01e9a03",
+      "name": "On any workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Receives the failed execution."
+    },
+    {
+      "parameters": {
+        "jsCode": "const URGENT = ['Lead Intake', 'Missed Call Text Back', 'Form to CRM'];\nreturn $input.all().map((item) => {\n  const execution = item.json.execution ?? {};\n  const workflow = item.json.workflow ?? {};\n  const trigger = item.json.trigger ?? {}; // present when the trigger node itself failed\n  const message = String(execution.error?.message ?? trigger.error?.message ?? 'unknown error').slice(0, 500);\n  const lastNode = execution.lastNodeExecuted ?? '(trigger)';\n  const name = workflow.name ?? 'unknown workflow';\n  return { json: {\n    workflowName: name,\n    workflowId: workflow.id ?? '',\n    executionId: execution.id ?? '',\n    lastNode,\n    message,\n    urgent: URGENT.includes(name),\n    text: `Workflow \"${name}\" failed at \"${lastNode}\": ${message}`\n      + (execution.retryOf ? ` (retry of execution ${execution.retryOf})` : '')\n      + (execution.url ? ` ${execution.url}` : ''),\n  }};\n});\n"
+      },
+      "id": "da271944-094d-573c-af9b-fce96a261671",
+      "name": "Format alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Flattens the error data into one readable line and decides whether it is urgent."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "585404e5-58ba-52ce-8ec6-08e27997a99b",
+      "name": "Post alert to alerts channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "Posts the alert."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d3a72b01-b8bc-5c16-a0b5-445cf0b3cdd8",
+              "leftValue": "={{ $('Format alert').item.json.urgent }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "053ed649-9dd4-5e8d-8a64-2b007c2314f1",
+      "name": "Customer facing workflow?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        300
+      ],
+      "notes": "Only failures that cost a customer contact wake someone up."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $env.OWNER_PHONE, from: $env.BUSINESS_PHONE, body: $('Format alert').item.json.text.slice(0, 300) }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "42eb6f1a-7f31-516d-88bd-8f0302883ba7",
+      "name": "Text owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Texts the owner a short version."
+    },
+    {
+      "parameters": {},
+      "id": "68103f43-d8cc-56a1-aeae-4b30659c61fc",
+      "name": "Chat alert is enough",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        960,
+        500
+      ],
+      "notes": "Back office failures wait for working hours."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "efc932bc-4c8d-5a92-9021-aa5d2c0af255",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "4c7a7a65-24e9-5848-a1f5-0465dfa45692",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "0d718ad5-394b-541a-a17f-367e2ba49357",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "dc73a6bd-7c70-5cf7-a099-580cca3536fc",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "216409df-b391-5eec-8b82-9c9b0e06d92b",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "316166a2-32be-5ac5-b8b0-a6c936b90893",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2f91c6da-b772-55f2-8e3e-602021d61ade",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ecd8c4f8-27a9-5fdb-a25c-259c31f554c2",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMAIL_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $env.OWNER_EMAIL, subject: 'Automation alerting is down', text: `The alert for a failed workflow could not be delivered.\\n\\n${$('Dead letter: build record').item.json.payload}` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "0fa8b9bc-4a74-5457-b8de-b2336ac44174",
+      "name": "Dead letter: email owner as last resort",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Email API"
+        }
+      },
+      "notes": "Chat or SMS is down. Email is the fallback channel."
+    }
+  ],
+  "connections": {
+    "On any workflow error": {
+      "main": [
+        [
+          {
+            "node": "Format alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format alert": {
+      "main": [
+        [
+          {
+            "node": "Post alert to alerts channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post alert to alerts channel": {
+      "main": [
+        [
+          {
+            "node": "Customer facing workflow?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Customer facing workflow?": {
+      "main": [
+        [
+          {
+            "node": "Text owner",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Chat alert is enough",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text owner": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: email owner as last resort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300
+  },
+  "pinData": {},
+  "tags": []
+}

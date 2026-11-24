@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "id": "job-3001",
+      "title": "Tub to shower conversion",
+      "customerName": "Alex Sample",
+      "status": "scheduled",
+      "scheduledStart": "2030-02-04T13:00:00Z",
+      "scheduledEnd": null,
+      "siteAddress": "100 Example Street",
+      "crew": "Crew A",
+      "calendarEventId": null
+    }
+  ]
+}

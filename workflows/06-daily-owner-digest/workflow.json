@@ -1,0 +1,407 @@
+{
+  "name": "Daily Owner Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * *"
+            }
+          ]
+        }
+      },
+      "id": "22bffeb4-b072-5926-9088-14eab54badc3",
+      "name": "Every day at 6pm",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Runs once each evening."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/leads/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ createdAfter: $now.startOf('day').toISO(), limit: 100 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "1209eebc-0498-5663-bdbc-5acf00e86890",
+      "name": "Fetch leads from today",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Leads created since midnight."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_BASE_URL }}/jobs/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ date: $now.plus({ days: 1 }).toISODate(), limit: 100 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "f9f5bb15-5778-53f1-87ab-4bd77c558a38",
+      "name": "Fetch jobs for tomorrow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "CRM API"
+        }
+      },
+      "notes": "Jobs scheduled for tomorrow.",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ACCOUNTING_API_URL }}/invoices/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'unpaid', limit: 500 }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "24ab922f-6499-5a3c-bf3c-ef3fab360b91",
+      "name": "Fetch unpaid invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Accounting API"
+        }
+      },
+      "notes": "Invoices with a balance.",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const leads = $('Fetch leads from today').first().json.results ?? [];\nconst jobs = $('Fetch jobs for tomorrow').first().json.results ?? [];\nconst unpaid = $('Fetch unpaid invoices').first().json.results ?? [];\nconst sum = (rows) => rows.reduce((total, row) => total + Number(row.balance ?? 0), 0);\nconst money = (n) => `$${Math.round(n).toLocaleString('en-US')}`;\nconst overdue = unpaid.filter((inv) => new Date(inv.dueDate) < new Date());\nconst lines = [\n  `New leads today: ${leads.length}`,\n  ...leads.slice(0, 10).map((l) => `  - ${l.name} (${l.service ?? 'general'}, via ${l.source ?? 'unknown'})`),\n  '',\n  `Jobs tomorrow: ${jobs.length}`,\n  ...jobs.slice(0, 10).map((j) => `  - ${j.startTime} ${j.title} (${j.crew ?? 'unassigned'})`),\n  '',\n  `Unpaid invoices: ${unpaid.length} worth ${money(sum(unpaid))}`,\n  `Of those overdue: ${overdue.length} worth ${money(sum(overdue))}`,\n];\nreturn [{ json: {\n  subject: `Daily digest for ${$now.toFormat('ccc LLL d')}`,\n  text: lines.join('\\n'),\n  leadCount: leads.length,\n  jobCount: jobs.length,\n  unpaidCount: unpaid.length,\n}}];\n"
+      },
+      "id": "a0498304-9cce-567b-b743-f6b5b1f1a500",
+      "name": "Compose digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Builds one plain text email from the three responses."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMAIL_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $env.OWNER_EMAIL, subject: $json.subject, text: $json.text }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "f560da06-6109-51a4-a9de-a0ae1ece8528",
+      "name": "Email digest to owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Email API"
+        }
+      },
+      "notes": "Sends the digest."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0bdbbf3e-cc70-52c3-912b-058e02db5373",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "057b6a36-32c9-5953-badf-dc9be4a3cad5",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "38d96280-47ab-5d20-ab53-21f7163a12cc",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "e505ab71-b745-5ba1-aabb-85aa4f50549b",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "a3cb5e06-7ba6-5276-ae19-ca78bbe745ce",
+              "name": "payload",
+              "value": "={{ JSON.stringify($json) }}",
+              "type": "string"
+            },
+            {
+              "id": "74574484-4dbe-5b77-b34b-880afc6b85e5",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8d2b8c70-17bc-5190-975e-77d3cd94b916",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        560
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "92b6ee29-04f6-5d3e-bd83-3659627649e6",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "42d65c54-143f-59fe-b4d8-5f5b4ee7fee4",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Every day at 6pm": {
+      "main": [
+        [
+          {
+            "node": "Fetch leads from today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch leads from today": {
+      "main": [
+        [
+          {
+            "node": "Fetch jobs for tomorrow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch jobs for tomorrow": {
+      "main": [
+        [
+          {
+            "node": "Fetch unpaid invoices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch unpaid invoices": {
+      "main": [
+        [
+          {
+            "node": "Compose digest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose digest": {
+      "main": [
+        [
+          {
+            "node": "Email digest to owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email digest to owner": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}
