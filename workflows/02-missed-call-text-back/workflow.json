@@ -138,12 +138,115 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Normalize call event').item.json.from }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "77393eed-c346-57c4-86f5-bc3339fde016",
+      "name": "Check opt-out list",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Asks the opt-out store whether this number replied STOP. If the store cannot be reached the text is not sent; the item goes to the dead letter path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3fd1d86b-7d8c-53d9-a61f-d729d37206a1",
+              "leftValue": "={{ ($json.results ?? []).filter((r) => r.optedOut !== false).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6dc50467-b1fb-5225-81ea-65cec2e3b8b2",
+      "name": "Still allowed to text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        300
+      ],
+      "notes": "Yes only when the store has no opt-out for the number."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6f509c0e-3eaf-5bea-acd4-ff88c627b4db",
+              "name": "skipped",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "2d6e2bee-55aa-5586-9504-5466ae4771e8",
+              "name": "reason",
+              "value": "number is on the SMS opt-out list",
+              "type": "string"
+            },
+            {
+              "id": "f7479034-5d62-5174-9703-5ea726cd4fe3",
+              "name": "phone",
+              "value": "={{ $('Normalize call event').item.json.from }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "73351549-228a-5e22-9fd8-812c9d6a6446",
+      "name": "Skip text: number opted out",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        300
+      ],
+      "notes": "No text is sent. The reason stays on the item so the execution shows why."
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.SMS_API_URL }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ to: $('Normalize call event').item.json.from, from: $env.BUSINESS_PHONE, body: $('Normalize call event').item.json.afterHours ? `Sorry we missed you. ${$env.BUSINESS_NAME} is closed right now. Text us what you need and we will call you first thing in the morning.` : `Sorry we missed your call. This is ${$env.BUSINESS_NAME}. What can we help with? We will call you right back.` }) }}",
+        "jsonBody": "={{ JSON.stringify({ to: $('Normalize call event').item.json.from, from: $env.BUSINESS_PHONE, body: $('Normalize call event').item.json.afterHours ? `Sorry we missed you. ${$env.BUSINESS_NAME} is closed right now. Text us what you need and we will call you first thing in the morning. Reply STOP to opt out.` : `Sorry we missed your call. This is ${$env.BUSINESS_NAME}. What can we help with? We will call you right back. Reply STOP to opt out.` }) }}",
         "options": {
           "timeout": 15000
         }
@@ -153,8 +256,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1200,
-        300
+        1680,
+        500
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -186,7 +289,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
+        1920,
         300
       ],
       "retryOnFail": true,
@@ -326,6 +429,42 @@
     }
   ],
   "connections": {
+    "Check opt-out list": {
+      "main": [
+        [
+          {
+            "node": "Still allowed to text?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still allowed to text?": {
+      "main": [
+        [
+          {
+            "node": "Send text back",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip text: number opted out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Call status webhook": {
       "main": [
         [
@@ -388,7 +527,7 @@
       "main": [
         [
           {
-            "node": "Send text back",
+            "node": "Check opt-out list",
             "type": "main",
             "index": 0
           }

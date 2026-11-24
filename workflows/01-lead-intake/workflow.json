@@ -139,6 +139,109 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Normalize lead').item.json.phone }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "9f5664e0-ab25-5435-bbb1-739da88e709c",
+      "name": "Check opt-out list",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Asks the opt-out store whether this number replied STOP. If the store cannot be reached the text is not sent; the item goes to the dead letter path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c35cdd00-bb26-5191-9b3f-2f23c46a9070",
+              "leftValue": "={{ ($json.results ?? []).filter((r) => r.optedOut !== false).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "78c8d08a-b42b-530b-9768-c38697cc4040",
+      "name": "Still allowed to text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        300
+      ],
+      "notes": "Yes only when the store has no opt-out for the number."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4b4e4a39-9576-5b1f-9007-1fd918bb45a8",
+              "name": "skipped",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "a0468113-e636-52b2-8d4f-e65a2cc15745",
+              "name": "reason",
+              "value": "number is on the SMS opt-out list",
+              "type": "string"
+            },
+            {
+              "id": "85fc1305-0d4e-5392-a9b8-d5ffa0539ce0",
+              "name": "phone",
+              "value": "={{ $('Normalize lead').item.json.phone }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8ee9ac58-d057-5706-9618-5d5ff46c774f",
+      "name": "Skip text: number opted out",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        300
+      ],
+      "notes": "No text is sent. The reason stays on the item so the execution shows why."
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.SMS_API_URL }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
@@ -154,8 +257,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1200,
-        300
+        1680,
+        500
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -185,7 +288,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
+        1920,
         300
       ],
       "retryOnFail": true,
@@ -244,7 +347,7 @@
       "typeVersion": 3.4,
       "position": [
         480,
-        560
+        760
       ],
       "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
     },
@@ -267,7 +370,7 @@
       "typeVersion": 4.2,
       "position": [
         720,
-        560
+        760
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -298,7 +401,7 @@
       "typeVersion": 4.2,
       "position": [
         960,
-        560
+        760
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -307,6 +410,42 @@
     }
   ],
   "connections": {
+    "Check opt-out list": {
+      "main": [
+        [
+          {
+            "node": "Still allowed to text?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still allowed to text?": {
+      "main": [
+        [
+          {
+            "node": "Text acknowledgement to lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip text: number opted out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Lead webhook": {
       "main": [
         [
@@ -369,7 +508,7 @@
       "main": [
         [
           {
-            "node": "Text acknowledgement to lead",
+            "node": "Check opt-out list",
             "type": "main",
             "index": 0
           }
@@ -395,6 +534,17 @@
         [
           {
             "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip text: number opted out": {
+      "main": [
+        [
+          {
+            "node": "Notify office channel",
             "type": "main",
             "index": 0
           }

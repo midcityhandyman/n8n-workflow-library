@@ -17,27 +17,34 @@ flowchart LR
     n3{"Missed inbound call?"}
     n4["Look up recent text backs"]
     n5{"First miss this hour?"}
-    n6["Send text back"]
-    n7["Log text back in CRM"]
-    n8["Nothing to send"]
-    n9["Dead letter: build record"]
-    n10["Dead letter: store failed item"]
-    n11["Dead letter: alert owner"]
+    n6["Check opt-out list"]
+    n7{"Still allowed to text?"}
+    n8["Skip text: number opted out"]
+    n9["Send text back"]
+    n10["Log text back in CRM"]
+    n11["Nothing to send"]
+    n12["Dead letter: build record"]
+    n13["Dead letter: store failed item"]
+    n14["Dead letter: alert owner"]
     n1 --> n2
     n2 --> n3
     n3 -- yes --> n4
-    n3 -- no --> n8
+    n3 -- no --> n11
     n4 --> n5
-    n4 -. error .-> n9
+    n4 -. error .-> n12
     n5 -- yes --> n6
-    n5 -- no --> n8
+    n5 -- no --> n11
     n6 --> n7
-    n6 -. error .-> n9
-    n7 -. error .-> n9
+    n6 -. error .-> n12
+    n7 -- yes --> n9
+    n7 -- no --> n8
     n9 --> n10
-    n10 --> n11
+    n9 -. error .-> n12
+    n10 -. error .-> n12
+    n12 --> n13
+    n13 --> n14
     classDef dead fill:#fde8e8,stroke:#b42318,color:#1f2937
-    class n9,n10,n11 dead
+    class n12,n13,n14 dead
 ```
 
 ## Nodes
@@ -49,6 +56,9 @@ flowchart LR
 | Missed inbound call? | If | n/a | Answered and outbound calls stop here. |
 | Look up recent text backs | HTTP Request | 3 tries, 2000 ms apart | Asks the CRM whether this caller was already texted in the last hour. |
 | First miss this hour? | If | n/a | Stops repeat dialers from getting a text for every attempt. |
+| Check opt-out list | HTTP Request | 3 tries, 2000 ms apart | Asks the opt-out store whether this number replied STOP. If the store cannot be reached the text is not sent; the item goes to the dead letter path. |
+| Still allowed to text? | If | n/a | Yes only when the store has no opt-out for the number. |
+| Skip text: number opted out | Edit Fields (Set) | n/a | No text is sent. The reason stays on the item so the execution shows why. |
 | Send text back | HTTP Request | 3 tries, 2000 ms apart | Texts the caller. |
 | Log text back in CRM | HTTP Request | 3 tries, 2000 ms apart | Records the text so the one hour check works and the office can see it. |
 | Nothing to send | No Operation | n/a | Answered call, outbound call, or caller already texted. |
@@ -68,6 +78,7 @@ Error paths in this workflow:
 
 ```text
 Look up recent text backs (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
+Check opt-out list (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
 Send text back (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
 Log text back in CRM (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
 ```
@@ -81,9 +92,10 @@ Log text back in CRM (x3, 2000 ms apart) =error=> Dead letter: build record -> D
 | `CRM_BASE_URL` | Base URL of the CRM REST API |
 | `SMS_API_URL` | Endpoint that sends one text message |
 | `ALERT_WEBHOOK_URL` | Incoming webhook for the alerts channel |
+| `OPT_OUT_URL` | Base URL of the SMS opt-out store |
 | `DEAD_LETTER_URL` | Endpoint that stores failed items for replay |
 
-Credentials to create in n8n (type: Header Auth) and select on the nodes after import: `CRM API`, `SMS gateway`, `Dead letter store`.
+Credentials to create in n8n (type: Header Auth) and select on the nodes after import: `CRM API`, `Opt-out store`, `SMS gateway`, `Dead letter store`.
 The JSON holds only a placeholder id and the credential name. No secret is stored in the file.
 
 ## Sample webhook body
@@ -104,7 +116,7 @@ Synthetic data, also saved as `sample.json`.
 
 1. In the n8n editor open a new workflow, then the three dot menu > Import from File, and pick `workflow.json`. On a self hosted server `n8n import:workflow --input=workflow.json` does the same.
 2. Create the Header Auth credentials named above and select them on the nodes that show a warning.
-3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or replace the `$env` expressions with n8n Variables.
+3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`. On a plan that has n8n Variables you can instead replace each `$env.NAME` with `$vars.NAME`; the main README explains the trade off.
 4. Under Settings > Error workflow pick the imported `Error Alerting` workflow (the file ships with the placeholder `REPLACE_WITH_ERROR_WORKFLOW_ID`).
 5. Run it once with the sample input, then publish it (activate on n8n 1.x).
 
@@ -113,3 +125,4 @@ Synthetic data, also saved as `sample.json`.
 - `MISSED` in `Normalize call event` lists the call statuses that count as missed.
 - The after hours window (before 8, after 18, workflow timezone) only changes the wording.
 - The one hour window is `sinceMinutes` in `Look up recent text backs`.
+- A caller whose number is on the opt-out list (workflow 11 maintains it) gets no text. The run ends at `Skip text: number opted out` with the reason on the item.

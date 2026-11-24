@@ -1,4 +1,4 @@
-"""The ten workflows. Each function describes one workflow with the Flow builder.
+"""The eleven workflows. Each function describes one workflow with the Flow builder.
 
 Everything talks to outside systems through the generic HTTP Request node so the
 library stays vendor neutral. Swap a node for a native integration after import
@@ -7,7 +7,7 @@ if you prefer; keep the retry and error output settings when you do.
 
 from __future__ import annotations
 
-from flowkit import DL_BUILD, Flow
+from flowkit import DL_BUILD, OPT_OUT_LINE, OPTED_OUT_COUNT, Flow
 
 CRM = "={{ $env.CRM_BASE_URL }}"
 ACCOUNTING = "={{ $env.ACCOUNTING_API_URL }}"
@@ -16,6 +16,8 @@ CALENDAR = "={{ $env.CALENDAR_API_URL }}"
 SMS = "={{ $env.SMS_API_URL }}"
 EMAIL = "={{ $env.EMAIL_API_URL }}"
 CHAT = "={{ $env.TEAM_CHAT_WEBHOOK_URL }}"
+OPT_OUT = "={{ $env.OPT_OUT_URL }}"
+STOP = OPT_OUT_LINE
 
 PHONE_JS = """
 const toE164 = (raw) => {
@@ -39,7 +41,7 @@ def lead_intake() -> Flow:
          "service": "bathroom remodel", "message": "Looking for a quote on a tub to shower conversion.",
          "source": "website"},
         ["The CRM call is an upsert keyed on `dedupeKey` (phone or email plus the date) so a double submit does not create two contacts.",
-         "Leads without a mobile number skip the text and still reach the office channel.",
+         "Leads without a mobile number skip the text and still reach the office channel. So do leads whose number is on the opt-out list (workflow 11 maintains it).",
          "Change the acknowledgement wording in `Text acknowledgement to lead`."],
     )
     trigger = f.webhook("Lead webhook", "lead-intake", "Receives the lead as JSON.")
@@ -71,16 +73,19 @@ return $input.all().map((item) => {
                     service: $json.service, message: $json.message, dedupeKey: $json.dedupeKey }""", cred="CRM API")
     has_phone = f.check("Has a mobile number?", "={{ $('Normalize lead').item.json.hasPhone }}",
                         "Email only leads skip the text.")
+    lookup, allowed, skip = f.opt_out_gate("$('Normalize lead').item.json.phone")
     text = f.http("Text acknowledgement to lead", "POST", SMS,
                   "Lets the lead know the request landed and a person will call.",
                   body="""{ to: $('Normalize lead').item.json.phone, from: $env.BUSINESS_PHONE,
                   body: `Hi ${$('Normalize lead').item.json.name.split(' ')[0] || 'there'}, thanks for reaching out to
-                  ${$env.BUSINESS_NAME}. We got your request and will call you shortly. Reply STOP to opt out.` }""",
+                  ${$env.BUSINESS_NAME}. We got your request and will call you shortly. """ + STOP + """` }""",
                   cred="SMS gateway")
     notify = f.http("Notify office channel", "POST", CHAT, "Posts the lead to the office chat so it gets claimed.",
                     body="""{ text: `New lead: ${$('Normalize lead').item.json.name} wants
                     ${$('Normalize lead').item.json.service} (via ${$('Normalize lead').item.json.source})` }""")
-    f.chain(trigger, normalize, valid, upsert, has_phone, text, notify)
+    f.chain(trigger, normalize, valid, upsert, has_phone, lookup)
+    f.chain(allowed, text, notify)
+    f.link(skip, notify)
     f.link(has_phone, notify, 1)
     f.reject(valid)
     return f
@@ -97,7 +102,8 @@ def missed_call_text_back() -> Flow:
          "status": "no-answer"},
         ["`MISSED` in `Normalize call event` lists the call statuses that count as missed.",
          "The after hours window (before 8, after 18, workflow timezone) only changes the wording.",
-         "The one hour window is `sinceMinutes` in `Look up recent text backs`."],
+         "The one hour window is `sinceMinutes` in `Look up recent text backs`.",
+         "A caller whose number is on the opt-out list (workflow 11 maintains it) gets no text. The run ends at `Skip text: number opted out` with the reason on the item."],
     )
     trigger = f.webhook("Call status webhook", "missed-call", "Receives one event per finished call.")
     normalize = f.code("Normalize call event", PHONE_JS + """
@@ -121,18 +127,20 @@ return $input.all().map((item) => {
                     body="{ phone: $json.from, type: 'missed_call_text', sinceMinutes: 60 }", cred="CRM API")
     first = f.check("First miss this hour?", "={{ ($json.results ?? []).length }}",
                     "Stops repeat dialers from getting a text for every attempt.", op="equals", right=0, kind="number")
+    lookup, allowed, _ = f.opt_out_gate("$('Normalize call event').item.json.from")
     send = f.http("Send text back", "POST", SMS, "Texts the caller.",
                   body="""{ to: $('Normalize call event').item.json.from, from: $env.BUSINESS_PHONE,
                   body: $('Normalize call event').item.json.afterHours
-                    ? `Sorry we missed you. ${$env.BUSINESS_NAME} is closed right now. Text us what you need and we will call you first thing in the morning.`
-                    : `Sorry we missed your call. This is ${$env.BUSINESS_NAME}. What can we help with? We will call you right back.` }""",
+                    ? `Sorry we missed you. ${$env.BUSINESS_NAME} is closed right now. Text us what you need and we will call you first thing in the morning. """ + STOP + """`
+                    : `Sorry we missed your call. This is ${$env.BUSINESS_NAME}. What can we help with? We will call you right back. """ + STOP + """` }""",
                   cred="SMS gateway")
     log = f.http("Log text back in CRM", "POST", CRM + "/activities",
                  "Records the text so the one hour check works and the office can see it.",
                  body="""{ phone: $('Normalize call event').item.json.from, type: 'missed_call_text',
                  callId: $('Normalize call event').item.json.callId }""", cred="CRM API")
     skip = f.noop("Nothing to send", "Answered call, outbound call, or caller already texted.")
-    f.chain(trigger, normalize, missed, recent, first, send, log)
+    f.chain(trigger, normalize, missed, recent, first, lookup)
+    f.chain(allowed, send, log)
     f.link(missed, skip, 1)
     f.link(first, skip, 1)
     return f
@@ -150,13 +158,14 @@ def estimate_follow_up() -> Flow:
                       "sentAt": "2030-01-06T15:00:00Z", "followUpsSent": 0, "optedOut": False}]},
         ["`CADENCE` in `Pick follow ups due today` holds the day offsets.",
          "A step missed over a weekend is sent on the next weekday because the check is 'at least N days'.",
-         "The third message says it is the last one. Keep that promise if you add steps."],
+         "The third message says it is the last one. Keep that promise if you add steps.",
+         "Two opt-out sources are honoured: the `optedOut` flag on the estimate and the opt-out store that workflow 11 maintains. A skipped estimate keeps its counter, so it is checked again on the next run."],
     )
     trigger = f.schedule("Weekdays at 9am", "0 9 * * 1-5", "Runs once each weekday morning.")
     fetch = f.http("Fetch open estimates", "POST", CRM + "/estimates/search",
                    "Reads estimates that are sent and not yet accepted or declined.",
                    body="{ status: 'sent', limit: 200 }", cred="CRM API")
-    pick = f.code("Pick follow ups due today", """
+    pick = f.code("Pick follow ups due today", PHONE_JS + """
 const CADENCE = [2, 5, 10]; // days after the estimate was sent
 const out = [];
 for (const item of $input.all()) {
@@ -168,7 +177,7 @@ for (const item of $input.all()) {
     out.push({ json: {
       estimateId: est.id,
       firstName: String(est.customerName ?? '').split(' ')[0] || 'there',
-      phone: est.phone,
+      phone: toE164(est.phone) || est.phone, // same format the opt-out store uses
       step: step + 1,
       isLast: step === CADENCE.length - 1,
     }});
@@ -176,18 +185,20 @@ for (const item of $input.all()) {
 }
 return out; // no items means nothing is due and the run ends here
 """, "Emits one item per estimate whose next nudge is due.")
+    lookup, allowed, _ = f.opt_out_gate("$('Pick follow ups due today').item.json.phone")
     send = f.http("Send follow up text", "POST", SMS, "Sends the nudge for this step.",
-                  body="""{ to: $json.phone, from: $env.BUSINESS_PHONE,
-                  body: $json.isLast
-                    ? `Hi ${$json.firstName}, last note from ${$env.BUSINESS_NAME} about your estimate. If the timing is not right, no problem. Reply any time and we will pick it back up.`
-                    : `Hi ${$json.firstName}, it is ${$env.BUSINESS_NAME}. Any questions on the estimate we sent? Happy to walk through it or adjust the scope.` }""",
+                  body="""{ to: $('Pick follow ups due today').item.json.phone, from: $env.BUSINESS_PHONE,
+                  body: $('Pick follow ups due today').item.json.isLast
+                    ? `Hi ${$('Pick follow ups due today').item.json.firstName}, last note from ${$env.BUSINESS_NAME} about your estimate. If the timing is not right, no problem. Reply any time and we will pick it back up. """ + STOP + """`
+                    : `Hi ${$('Pick follow ups due today').item.json.firstName}, it is ${$env.BUSINESS_NAME}. Any questions on the estimate we sent? Happy to walk through it or adjust the scope. """ + STOP + """` }""",
                   cred="SMS gateway")
     record = f.http("Record follow up on estimate", "PATCH",
                     CRM + "/estimates/{{ $('Pick follow ups due today').item.json.estimateId }}",
                     "Bumps the follow up counter so the same step is not sent again.",
                     body="""{ followUpsSent: $('Pick follow ups due today').item.json.step,
                     lastFollowUpAt: $now.toISO() }""", cred="CRM API")
-    f.chain(trigger, fetch, pick, send, record)
+    f.chain(trigger, fetch, pick, lookup)
+    f.chain(allowed, send, record)
     return f
 
 
@@ -268,17 +279,19 @@ def review_request() -> Flow:
     f = Flow(
         5, "review-request", "Review Request",
         "Asks happy customers for a review right after the job closes, and only them. A job has to be paid, "
-        "have no open complaint, and the customer must not have been asked in the last 90 days.",
+        "have no open complaint, the customer must not have been asked in the last 90 days, and the number "
+        "must not be on the SMS opt-out list.",
         "Webhook, `POST /webhook/job-completed`. Fire it from the job system when a job is marked complete.",
         "Sample webhook body",
         {"jobId": "job-3001", "customerId": "cus-501", "customerName": "Alex Sample", "phone": "+15555550142",
          "paid": True, "openComplaint": False, "lastReviewRequestAt": None, "smsOptOut": False},
         ["`COOL_DOWN_DAYS` in `Check eligibility` sets how often one customer can be asked.",
          "Skipped jobs carry a `reason` field. Open the execution to see why a job was skipped.",
+         "Two opt-out sources are honoured: the `smsOptOut` flag in the webhook body and the opt-out store that workflow 11 maintains.",
          "Do not offer anything in exchange for a review. Most review sites prohibit it."],
     )
     trigger = f.webhook("Job completed webhook", "job-completed", "Receives the finished job.")
-    eligible = f.code("Check eligibility", """
+    eligible = f.code("Check eligibility", PHONE_JS + """
 const COOL_DOWN_DAYS = 90;
 return $input.all().map((item) => {
   const job = item.json.body ?? item.json;
@@ -294,16 +307,17 @@ return $input.all().map((item) => {
     jobId: job.jobId,
     customerId: job.customerId,
     firstName: String(job.customerName ?? '').split(' ')[0] || 'there',
-    phone: job.phone ?? '',
+    phone: toE164(job.phone) || (job.phone ?? ''), // same format the opt-out store uses
     eligible: reason === '',
     reason,
   }};
 });
 """, "Applies the rules and records the reason when a job is skipped.")
     gate = f.check("Eligible for a review request?", "={{ $json.eligible }}", "Skipped jobs end quietly.")
+    lookup, allowed, _ = f.opt_out_gate("$('Check eligibility').item.json.phone")
     send = f.http("Send review request text", "POST", SMS, "Sends the ask with the review link.",
-                  body="""{ to: $json.phone, from: $env.BUSINESS_PHONE,
-                  body: `Hi ${$json.firstName}, thanks for choosing ${$env.BUSINESS_NAME}. If we earned it, a quick review helps a small business a lot: ${$env.REVIEW_LINK}` }""",
+                  body="""{ to: $('Check eligibility').item.json.phone, from: $env.BUSINESS_PHONE,
+                  body: `Hi ${$('Check eligibility').item.json.firstName}, thanks for choosing ${$env.BUSINESS_NAME}. If we earned it, a quick review helps a small business a lot: ${$env.REVIEW_LINK} """ + STOP + """` }""",
                   cred="SMS gateway")
     stamp = f.http("Stamp review requested", "PATCH",
                    CRM + "/contacts/{{ $('Check eligibility').item.json.customerId }}",
@@ -311,7 +325,8 @@ return $input.all().map((item) => {
                    body="{ lastReviewRequestAt: $now.toISO(), lastReviewRequestJobId: $('Check eligibility').item.json.jobId }",
                    cred="CRM API")
     skip = f.noop("Skip review request", "Not eligible. The reason is on the item.")
-    f.chain(trigger, eligible, gate, send, stamp)
+    f.chain(trigger, eligible, gate, lookup)
+    f.chain(allowed, send, stamp)
     f.link(gate, skip, 1)
     return f
 
@@ -568,7 +583,7 @@ return out;
 def error_alerting() -> Flow:
     f = Flow(
         10, "error-alerting", "Error Alerting",
-        "The last line of defence for the other nine. Set it as the error workflow on every workflow and any "
+        "The last line of defence for the other ten. Set it as the error workflow on every workflow and any "
         "failed execution, including a trigger that could not start, becomes a message in the alerts channel "
         "with the workflow, the node and a link to the execution. Failures in customer facing workflows also "
         "text the owner. If the alert itself cannot be delivered it is stored and emailed instead.",
@@ -580,12 +595,12 @@ def error_alerting() -> Flow:
          "workflow": {"id": "1", "name": "Lead Intake"}},
         ["`URGENT` in `Format alert` lists the workflows that should also text the owner.",
          "This workflow does not name an error workflow of its own. That would loop.",
-         "Import this workflow first and copy its id into the other nine."],
+         "Import this workflow first and copy its id into the other ten."],
         is_error_workflow=True,
     )
     trigger = f.error_trigger("On any workflow error", "Receives the failed execution.")
     fmt = f.code("Format alert", """
-const URGENT = ['Lead Intake', 'Missed Call Text Back', 'Form to CRM'];
+const URGENT = ['Lead Intake', 'Missed Call Text Back', 'Form to CRM', 'SMS Opt-Out'];
 return $input.all().map((item) => {
   const execution = item.json.execution ?? {};
   const workflow = item.json.workflow ?? {};
@@ -623,5 +638,77 @@ return $input.all().map((item) => {
     return f
 
 
+def sms_opt_out() -> Flow:
+    f = Flow(
+        11, "sms-opt-out", "SMS Opt-Out",
+        "Handles the reply to every 'Reply STOP to opt out' line the other workflows send. An inbound text that is "
+        "exactly STOP, STOPALL, UNSUBSCRIBE, CANCEL, END or QUIT puts the number on the opt-out list; START or "
+        "UNSTOP takes it off again. The sender gets one confirmation when the status changes and none for a "
+        "repeat. Workflows 01, 02, 03 and 05 read the same list before they text anyone.",
+        "Webhook, `POST /webhook/inbound-sms`. Point your SMS provider's inbound message callback at it.",
+        "Sample webhook body",
+        {"messageId": "msg-0001", "from": "+15555550142", "to": "+15555550100", "text": " Stop "},
+        ["`OPT_OUT` and `OPT_IN` in `Classify reply` hold the keywords. The whole message has to be the keyword; case, spaces and punctuation are ignored, so `stop.` and `Stop All` count and `please stop calling` does not. Add your own words if customers write them.",
+         "The workflow expects `from` and `text` in the webhook body. Rename them in `Classify reply` to match your provider.",
+         "The store contract is two calls: `POST {OPT_OUT_URL}/search` with `{ phone }` returns `{ results: [...] }` (empty when the number may be texted), and `POST {OPT_OUT_URL}` with `{ phone, optedOut }` creates or updates the entry. An entry with `optedOut: false` is treated as not opted out.",
+         "Many SMS providers and carriers act on STOP themselves and send their own confirmation. If yours does, delete `Send confirmation text` and keep the rest so the list the other workflows read stays current.",
+         "Messages that are not a keyword end at `Not an opt-out keyword`. Route that output to your own inbox or chat handling if you want replies to reach a person."],
+    )
+    trigger = f.webhook("Inbound SMS webhook", "inbound-sms", "Receives one inbound text message.")
+    classify = f.code("Classify reply", PHONE_JS + """
+const OPT_OUT = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'];
+const OPT_IN = ['START', 'UNSTOP'];
+return $input.all().map((item) => {
+  const body = item.json.body ?? item.json;
+  const from = toE164(body.from);
+  // The whole message must be the keyword. Case, spaces and punctuation are ignored.
+  const word = String(body.text ?? '').toUpperCase().replace(/[^A-Z]/g, '');
+  const action = OPT_OUT.includes(word) ? 'opt_out' : OPT_IN.includes(word) ? 'opt_in' : 'none';
+  return { json: {
+    messageId: String(body.messageId ?? ''),
+    from,
+    keyword: action === 'none' ? '' : word,
+    action,
+    isKeyword: action !== 'none',
+    hasSender: from !== '',
+  }};
+});
+""", "Decides whether the message is an opt-out keyword, an opt-in keyword or neither.")
+    keyword = f.check("Opt-out or opt-in keyword?", "={{ $json.isKeyword }}", "Ordinary replies stop here.")
+    sender = f.check("Sender number usable?", "={{ $json.hasSender }}",
+                     "A keyword from a number that cannot be read goes to the dead letter path so a person can act on it.")
+    lookup = f.http("Look up current status", "POST", OPT_OUT + "/search",
+                    "Reads the number's current entry so a repeat keyword does not trigger a second confirmation.",
+                    body="{ phone: $json.from }", cred="Opt-out store")
+    changes = f.check("Does the status change?",
+                      "={{ (" + OPTED_OUT_COUNT + " > 0) !== ($('Classify reply').item.json.action === 'opt_out') }}",
+                      "Yes when a STOP arrives for a number that is not opted out, or a START for one that is.")
+    store = f.http("Record opt-out status", "POST", OPT_OUT,
+                   "Creates or updates the entry the other workflows read before texting.",
+                   body="""{ phone: $('Classify reply').item.json.from,
+                   optedOut: $('Classify reply').item.json.action === 'opt_out',
+                   keyword: $('Classify reply').item.json.keyword, source: 'sms_reply',
+                   messageId: $('Classify reply').item.json.messageId, changedAt: $now.toISO() }""",
+                   cred="Opt-out store")
+    confirm = f.http("Send confirmation text", "POST", SMS,
+                     "Confirms the change to the sender, once.",
+                     body="""{ to: $('Classify reply').item.json.from, from: $env.BUSINESS_PHONE,
+                     body: $('Classify reply').item.json.action === 'opt_out'
+                       ? `You are unsubscribed from ${$env.BUSINESS_NAME} texts and will get no more messages. Reply START to resubscribe.`
+                       : `You are resubscribed to ${$env.BUSINESS_NAME} texts. """ + STOP + """` }""",
+                     cred="SMS gateway")
+    ignore = f.noop("Not an opt-out keyword", "Ordinary replies are not this workflow's job.")
+    same = f.record("Skip confirmation: status unchanged", [
+        ("skipped", True, "boolean"),
+        ("reason", "status already recorded, no second confirmation", "string"),
+        ("phone", "={{ $('Classify reply').item.json.from }}", "string"),
+    ], "A repeat STOP or START. Nothing is written and nothing is sent.")
+    f.chain(trigger, classify, keyword, sender, lookup, changes, store, confirm)
+    f.link(keyword, ignore, 1)
+    f.link(changes, same, 1)
+    f.reject(sender)
+    return f
+
+
 ALL = [lead_intake, missed_call_text_back, estimate_follow_up, invoice_reminder, review_request,
-       daily_owner_digest, new_hire_onboarding, form_to_crm, calendar_sync, error_alerting]
+       daily_owner_digest, new_hire_onboarding, form_to_crm, calendar_sync, error_alerting, sms_opt_out]

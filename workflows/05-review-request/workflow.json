@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const COOL_DOWN_DAYS = 90;\nreturn $input.all().map((item) => {\n  const job = item.json.body ?? item.json;\n  const last = job.lastReviewRequestAt ? new Date(job.lastReviewRequestAt).getTime() : 0;\n  const daysSince = last ? (Date.now() - last) / 86400000 : Infinity;\n  let reason = '';\n  if (!job.phone) reason = 'no phone number';\n  else if (job.smsOptOut) reason = 'customer opted out of texts';\n  else if (!job.paid) reason = 'job is not paid yet';\n  else if (job.openComplaint) reason = 'open complaint on the job';\n  else if (daysSince < COOL_DOWN_DAYS) reason = 'asked recently';\n  return { json: {\n    jobId: job.jobId,\n    customerId: job.customerId,\n    firstName: String(job.customerName ?? '').split(' ')[0] || 'there',\n    phone: job.phone ?? '',\n    eligible: reason === '',\n    reason,\n  }};\n});\n"
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\nconst COOL_DOWN_DAYS = 90;\nreturn $input.all().map((item) => {\n  const job = item.json.body ?? item.json;\n  const last = job.lastReviewRequestAt ? new Date(job.lastReviewRequestAt).getTime() : 0;\n  const daysSince = last ? (Date.now() - last) / 86400000 : Infinity;\n  let reason = '';\n  if (!job.phone) reason = 'no phone number';\n  else if (job.smsOptOut) reason = 'customer opted out of texts';\n  else if (!job.paid) reason = 'job is not paid yet';\n  else if (job.openComplaint) reason = 'open complaint on the job';\n  else if (daysSince < COOL_DOWN_DAYS) reason = 'asked recently';\n  return { json: {\n    jobId: job.jobId,\n    customerId: job.customerId,\n    firstName: String(job.customerName ?? '').split(' ')[0] || 'there',\n    phone: toE164(job.phone) || (job.phone ?? ''), // same format the opt-out store uses\n    eligible: reason === '',\n    reason,\n  }};\n});\n"
       },
       "id": "b69093b2-2b3e-54d1-ae7e-7a7c59656a26",
       "name": "Check eligibility",
@@ -71,12 +71,115 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Check eligibility').item.json.phone }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "491d999d-9e32-55d7-a21f-51e700e1482a",
+      "name": "Check opt-out list",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Asks the opt-out store whether this number replied STOP. If the store cannot be reached the text is not sent; the item goes to the dead letter path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "aedfc58e-f77d-5760-a87e-9bf9ad8d8ea9",
+              "leftValue": "={{ ($json.results ?? []).filter((r) => r.optedOut !== false).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2d5f9a57-35cc-56d2-869e-34ec6b47e5c1",
+      "name": "Still allowed to text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Yes only when the store has no opt-out for the number."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a669b08c-11c0-5227-8604-f8b5e1ffbb56",
+              "name": "skipped",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "0121eb04-2f41-59ae-9a7a-72c92f929094",
+              "name": "reason",
+              "value": "number is on the SMS opt-out list",
+              "type": "string"
+            },
+            {
+              "id": "46279d27-13c5-5dfd-b61c-88b42a3cf09b",
+              "name": "phone",
+              "value": "={{ $('Check eligibility').item.json.phone }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3ef6bde3-be49-5463-b74e-e9d1cfb6682b",
+      "name": "Skip text: number opted out",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        300
+      ],
+      "notes": "No text is sent. The reason stays on the item so the execution shows why."
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.SMS_API_URL }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ to: $json.phone, from: $env.BUSINESS_PHONE, body: `Hi ${$json.firstName}, thanks for choosing ${$env.BUSINESS_NAME}. If we earned it, a quick review helps a small business a lot: ${$env.REVIEW_LINK}` }) }}",
+        "jsonBody": "={{ JSON.stringify({ to: $('Check eligibility').item.json.phone, from: $env.BUSINESS_PHONE, body: `Hi ${$('Check eligibility').item.json.firstName}, thanks for choosing ${$env.BUSINESS_NAME}. If we earned it, a quick review helps a small business a lot: ${$env.REVIEW_LINK} Reply STOP to opt out.` }) }}",
         "options": {
           "timeout": 15000
         }
@@ -86,8 +189,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        720,
-        300
+        1200,
+        500
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -119,7 +222,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        960,
+        1440,
         300
       ],
       "retryOnFail": true,
@@ -259,6 +362,42 @@
     }
   ],
   "connections": {
+    "Check opt-out list": {
+      "main": [
+        [
+          {
+            "node": "Still allowed to text?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still allowed to text?": {
+      "main": [
+        [
+          {
+            "node": "Send review request text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip text: number opted out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Job completed webhook": {
       "main": [
         [
@@ -285,7 +424,7 @@
       "main": [
         [
           {
-            "node": "Send review request text",
+            "node": "Check opt-out list",
             "type": "main",
             "index": 0
           }

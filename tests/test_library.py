@@ -1,4 +1,4 @@
-"""Tests over the shipped library: the ten workflows, their docs and the repo hygiene rules."""
+"""Tests over the shipped library: the eleven workflows, their docs and the repo hygiene rules."""
 
 import json
 import re
@@ -11,12 +11,15 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_workflows  # noqa: E402
-from n8n_validator import graph, render, validate_file  # noqa: E402
+from n8n_validator import checks, graph, render, validate_file  # noqa: E402
 
 FOLDERS = sorted(p for p in (ROOT / "workflows").iterdir() if p.is_dir())
 EXPECTED = ["01-lead-intake", "02-missed-call-text-back", "03-estimate-follow-up", "04-invoice-reminder",
             "05-review-request", "06-daily-owner-digest", "07-new-hire-onboarding", "08-form-to-crm",
-            "09-calendar-sync", "10-error-alerting"]
+            "09-calendar-sync", "10-error-alerting", "11-sms-opt-out"]
+SMS_WORKFLOWS = {"01-lead-intake": "Text acknowledgement to lead", "02-missed-call-text-back": "Send text back",
+                 "03-estimate-follow-up": "Send follow up text", "05-review-request": "Send review request text",
+                 "11-sms-opt-out": "Send confirmation text"}
 TEXT_SUFFIXES = {".md", ".py", ".json", ".yml", ".txt", ".mjs", ".example", ".gitignore"}
 
 
@@ -32,7 +35,7 @@ def repo_text_files():
 
 
 class LibraryTests(unittest.TestCase):
-    def test_the_ten_workflows_exist(self):
+    def test_the_eleven_workflows_exist(self):
         self.assertEqual([f.name for f in FOLDERS], EXPECTED)
         for folder in FOLDERS:
             for name in ("workflow.json", "README.md", "sample.json"):
@@ -65,6 +68,44 @@ class LibraryTests(unittest.TestCase):
                 self.assertIn("n8n-nodes-base.errorTrigger", types)
             else:
                 self.assertEqual(wf["settings"]["errorWorkflow"], "REPLACE_WITH_ERROR_WORKFLOW_ID")
+
+    def test_customer_texts_are_exactly_the_expected_nodes(self):
+        found = {}
+        for folder in FOLDERS:
+            for node in load(folder)["nodes"]:
+                if checks.is_customer_sms(node):
+                    self.assertNotIn(folder.name, found, "one customer text node per workflow")
+                    found[folder.name] = node["name"]
+        self.assertEqual(found, SMS_WORKFLOWS)
+
+    def test_every_customer_text_has_an_opt_out_line(self):
+        for slug, name in SMS_WORKFLOWS.items():
+            with self.subTest(slug):
+                node = next(n for n in load(ROOT / "workflows" / slug)["nodes"] if n["name"] == name)
+                texts = checks.message_texts(node["parameters"]["jsonBody"])
+                self.assertTrue(texts)
+                for text in texts:
+                    self.assertTrue(checks.has_opt_out_line(text), text)
+                    self.assertLessEqual(len(text), 320, "keep texts within two SMS segments before names are filled in")
+
+    def test_every_customer_text_is_behind_the_opt_out_lookup(self):
+        for slug, name in SMS_WORKFLOWS.items():
+            with self.subTest(slug):
+                wf = load(ROOT / "workflows" / slug)
+                nodes = graph.node_map(wf)
+                (gate,) = checks.opt_out_gates(wf)
+                yes, no = graph.outputs(wf, gate["name"])[:2]
+                self.assertIn(name, graph.reachable(wf, yes))
+                self.assertNotIn(name, graph.reachable(wf, no))
+                (skip,) = no
+                reasons = [a["value"] for a in nodes[skip]["parameters"]["assignments"]["assignments"]
+                           if a["name"] == "reason"]
+                self.assertEqual(len(reasons), 1)
+                lookups = [n for n in wf["nodes"] if checks.is_opt_out_lookup(n) and n["name"] != "Record opt-out status"]
+                self.assertEqual(len(lookups), 1)
+                self.assertTrue(lookups[0]["parameters"]["url"].endswith("/search"))
+                self.assertEqual(lookups[0]["onError"], "continueErrorOutput", "store down must not mean text anyway")
+                self.assertEqual(graph.error_targets(wf, lookups[0]), ["Dead letter: build record"])
 
     def test_credentials_are_placeholders_only(self):
         for folder in FOLDERS:

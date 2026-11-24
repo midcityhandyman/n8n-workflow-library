@@ -11,14 +11,16 @@ PASS  workflows/07-new-hire-onboarding/workflow.json
 PASS  workflows/08-form-to-crm/workflow.json
 PASS  workflows/09-calendar-sync/workflow.json
 PASS  workflows/10-error-alerting/workflow.json
+PASS  workflows/11-sms-opt-out/workflow.json
 
-10 of 10 workflows passed, 16 rules each
+11 of 11 workflows passed, 18 rules each
 
 2. Where does a failed item go?
 ===============================
 Lead Intake  (workflows/01-lead-intake/workflow.json)
-  main path : Lead webhook -> Normalize lead -> Has a way to reach them? -> Upsert CRM contact -> Has a mobile number? -> Text acknowledgement to lead -> Notify office channel
+  main path : Lead webhook -> Normalize lead -> Has a way to reach them? -> Upsert CRM contact -> Has a mobile number? -> Check opt-out list -> Still allowed to text? -> Text acknowledgement to lead -> Notify office channel
   on failure: Upsert CRM contact (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
+  on failure: Check opt-out list (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
   on failure: Text acknowledgement to lead (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
   on failure: Notify office channel (x3, 2000 ms apart) =error=> Dead letter: build record -> Dead letter: store failed item -> Dead letter: alert owner
   last resort: settings.errorWorkflow = REPLACE_WITH_ERROR_WORKFLOW_ID
@@ -44,6 +46,7 @@ CAUGHT  On Error left at the default (stop workflow)  (expects ERR-02: Nodes tha
 
 CAUGHT  Dead letter store deleted  (expects ERR-03: Every error output leads to a dead letter node that stores the failed item)
         ERR-03 [Upsert CRM contact]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
+        ERR-03 [Check opt-out list]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
         ERR-03 [Text acknowledgement to lead]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
         ERR-03 [Notify office channel]: error output goes to 'Dead letter: build record' but never reaches a dead letter store
 
@@ -61,7 +64,7 @@ CAUGHT  Credential data inlined instead of referenced  (expects CRED-01: Credent
         CRED-01 [Upsert CRM contact]: credential 'httpHeaderAuth' must be a reference with only id and name
 
 CAUGHT  Connection points at a node that was renamed  (expects STRUCT-04: Connections only reference nodes that exist and use the main[][] shape)
-        STRUCT-04 [Lead webhook]: main[0] points at unknown node 'Node that does not exist'
+        STRUCT-04 [Check opt-out list]: main[0] points at unknown node 'Node that does not exist'
 
 CAUGHT  Two nodes share a name  (expects STRUCT-03: Node ids and node names are unique)
         STRUCT-03 [Normalize lead]: node name is used more than once
@@ -75,4 +78,10 @@ CAUGHT  Exported while active with pinned test data  (expects STRUCT-07: Workflo
 CAUGHT  Expression with a missing brace  (expects STRUCT-08: Expressions have matching {{ and }} pairs)
         STRUCT-08 [Upsert CRM contact]: unbalanced expression braces in: ={{ $env.CRM_BASE_URL }/contacts
 
-12 of 12 breakages caught
+CAUGHT  Opt-out line edited out of a customer text  (expects SMS-01: Every customer facing text message carries an opt-out line (Reply STOP ...))
+        SMS-01 [Text acknowledgement to lead]: 1 of 1 message variants have no opt-out line (first: 'Hi ${$('Normalize lead').item.json.name....')
+
+CAUGHT  Shortcut wired around the opt-out check  (expects SMS-02: Every customer facing text sits behind an opt-out store lookup, and a skipped send records a reason)
+        SMS-02 [Text acknowledgement to lead]: can be reached without passing an opt-out store lookup and its If node
+
+14 of 14 breakages caught

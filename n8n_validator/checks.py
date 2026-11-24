@@ -31,6 +31,8 @@ RULES = {
     "CRED-01": "Credential references carry only an id and a name",
     "CRED-02": "No string looks like a key, token, password or URL with a login in it",
     "CRED-03": "Sensitive fields (password, token, Authorization...) hold expressions, not literals",
+    "SMS-01": "Every customer facing text message carries an opt-out line (Reply STOP ...)",
+    "SMS-02": "Every customer facing text sits behind an opt-out store lookup, and a skipped send records a reason",
 }
 
 # Node types that reach outside n8n and can therefore fail for reasons we do not control.
@@ -46,6 +48,17 @@ IO_NODE_TYPES = {
     "n8n-nodes-base.hubspot",
     "n8n-nodes-base.airtable",
 }
+
+# Conventions the SMS rules rely on. A node sends a text if it is an HTTP Request whose URL reads
+# an SMS_..._URL variable. It is customer facing unless its `to` is one of the business's own numbers.
+# A node reads or writes the opt-out store if its URL reads a variable with OPT_OUT in the name.
+SMS_URL = re.compile(r"\bSMS_[A-Z0-9_]*URL\b")
+OPT_OUT_URL = re.compile(r"\bOPT_?OUT[A-Z0-9_]*URL\b")
+INTERNAL_RECIPIENT = re.compile(r"\bto\s*:\s*\$(?:env|vars)\.[A-Z0-9_]*(?:OWNER|STAFF|TEAM|OFFICE)[A-Z0-9_]*\s*[,}]")
+MESSAGE_KEY = re.compile(r"\b(?:body|text|message)\s*:")
+STOP_LINE = re.compile(r"\breply\s+STOP\b", re.I)
+# The one message that should not invite another STOP: the confirmation that the number is unsubscribed.
+RESTART_LINE = re.compile(r"\bunsubscribed\b.*\breply\s+START\b", re.I | re.S)
 
 ON_ERROR_VALUES = {"stopWorkflow", "continueRegularOutput", "continueErrorOutput"}
 
@@ -355,6 +368,174 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(child)
 
 
+# ---------------------------------------------------------------------------- texting
+
+
+def _url(node: dict[str, Any]) -> str:
+    params = node.get("parameters")
+    url = params.get("url") if isinstance(params, dict) else None
+    return url if isinstance(url, str) else ""
+
+
+def _json_body(node: dict[str, Any]) -> str:
+    params = node.get("parameters")
+    body = params.get("jsonBody") if isinstance(params, dict) else None
+    return body if isinstance(body, str) else ""
+
+
+def is_sms_node(node: dict[str, Any]) -> bool:
+    return node.get("type") == "n8n-nodes-base.httpRequest" and bool(SMS_URL.search(_url(node)))
+
+
+def is_customer_sms(node: dict[str, Any]) -> bool:
+    return is_sms_node(node) and not INTERNAL_RECIPIENT.search(_json_body(node))
+
+
+def is_opt_out_lookup(node: dict[str, Any]) -> bool:
+    return node.get("type") == "n8n-nodes-base.httpRequest" and bool(OPT_OUT_URL.search(_url(node)))
+
+
+def _skip_literal(text: str, start: int) -> int:
+    """`start` is at an opening quote. Return the index just past the closing quote."""
+    quote = text[start]
+    i = start + 1
+    while i < len(text):
+        char = text[i]
+        if char == "\\":
+            i += 2
+        elif char == quote:
+            return i + 1
+        elif quote == "`" and text.startswith("${", i):
+            depth, i = 1, i + 2
+            while i < len(text) and depth:
+                if text[i] in "'\"`":
+                    i = _skip_literal(text, i)
+                    continue
+                depth += {"{": 1, "}": -1}.get(text[i], 0)
+                i += 1
+        else:
+            i += 1
+    return i
+
+
+def message_texts(expression: str) -> list[str] | None:
+    """The string literals that make up the message in an SMS body expression.
+
+    Returns None when the expression has no body, text or message key. Literals that are node
+    references such as $('Node name'), literals compared with == or != and literals nested
+    inside ${...} are not message text.
+    A message built without any literal returns an empty list: its wording cannot be checked.
+    """
+    match = MESSAGE_KEY.search(expression)
+    if not match:
+        return None
+    texts: list[str] = []
+    i, depth = match.end(), 0
+    while i < len(expression):
+        char = expression[i]
+        if char in "'\"`":
+            end = _skip_literal(expression, i)
+            before, after = expression[:i].rstrip(), expression[end:].lstrip()
+            compared = before.endswith(("==", "!=")) or after.startswith(("==", "!="))
+            if not before.endswith("$(") and not compared:
+                texts.append(expression[i + 1:end - 1])
+            i = end
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            break
+        i += 1
+    return texts
+
+
+def has_opt_out_line(text: str) -> bool:
+    return bool(STOP_LINE.search(text) or RESTART_LINE.search(text))
+
+
+def opt_out_gates(wf: dict[str, Any]) -> list[dict[str, Any]]:
+    """If nodes fed directly by the regular output of an opt-out store lookup."""
+    nodes = graph.node_map(wf)
+    names: list[str] = []
+    for node in nodes.values():
+        if not is_opt_out_lookup(node):
+            continue
+        for group in graph.regular_targets(wf, node):
+            for target in group:
+                if nodes[target].get("type") == "n8n-nodes-base.if" and target not in names:
+                    names.append(target)
+    return [nodes[name] for name in names]
+
+
+def _records_reason(node: dict[str, Any]) -> bool:
+    if node.get("type") != "n8n-nodes-base.set":
+        return False
+    params = node.get("parameters") if isinstance(node.get("parameters"), dict) else {}
+    assignments = params.get("assignments", {})
+    rows = assignments.get("assignments", []) if isinstance(assignments, dict) else []
+    return any(isinstance(r, dict) and r.get("name") == "reason" and str(r.get("value", "")).strip() for r in rows)
+
+
+def check_sms(wf: dict[str, Any]) -> list[Finding]:
+    out: list[Finding] = []
+    nodes = graph.node_map(wf)
+    customer = [n for n in nodes.values() if is_customer_sms(n)]
+    if not customer:
+        return out
+
+    for node in customer:
+        texts = message_texts(_json_body(node))
+        if texts is None:
+            out.append(Finding("SMS-01", "cannot find the message text (no body, text or message key in the JSON body)",
+                               node["name"]))
+        elif not texts:
+            out.append(Finding("SMS-01", "message has no fixed wording, so an opt-out line cannot be confirmed",
+                               node["name"]))
+        else:
+            missing = [t for t in texts if not has_opt_out_line(t)]
+            if missing:
+                out.append(Finding(
+                    "SMS-01", f"{len(missing)} of {len(texts)} message variants have no opt-out line "
+                              f"(first: '{missing[0][:40]}...')", node["name"]))
+
+    gates = opt_out_gates(wf)
+    gate_names = {g["name"] for g in gates}
+    # Walk from the triggers without crossing the yes output of any gate. A text node reached this
+    # way can be sent to a number nobody looked up.
+    triggers = [n["name"] for n in nodes.values() if graph.is_trigger(n)]
+    seen: set[str] = set()
+    stack = list(triggers)
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        groups = graph.outputs(wf, name)
+        for index, group in enumerate(groups):
+            if name in gate_names and index == 0:
+                continue
+            stack.extend(group)
+    for node in customer:
+        if node["name"] in seen:
+            out.append(Finding("SMS-02", "can be reached without passing an opt-out store lookup and its If node",
+                               node["name"]))
+    for gate in gates:
+        outs = graph.outputs(wf, gate["name"])
+        skipped = outs[1] if len(outs) > 1 else []
+        if not skipped:
+            out.append(Finding("SMS-02", "the no output is not connected, so a skipped send leaves no reason",
+                               gate["name"]))
+        for target in skipped:
+            if not _records_reason(nodes[target]):
+                out.append(Finding("SMS-02", f"the no output goes to '{target}', which does not set a 'reason' field",
+                                   gate["name"]))
+    return out
+
+
 # ------------------------------------------------------------------------------ entry
 
 
@@ -362,6 +543,7 @@ def validate_workflow(wf: Any) -> list[Finding]:
     findings, sound = check_structure(wf)
     if sound:
         findings += check_error_handling(wf)
+        findings += check_sms(wf)
     if isinstance(wf, dict):
         findings += check_credentials(wf)
     return findings

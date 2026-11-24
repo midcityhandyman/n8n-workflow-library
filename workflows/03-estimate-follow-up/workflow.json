@@ -57,7 +57,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const CADENCE = [2, 5, 10]; // days after the estimate was sent\nconst out = [];\nfor (const item of $input.all()) {\n  for (const est of item.json.results ?? []) {\n    const step = Number(est.followUpsSent ?? 0);\n    if (est.optedOut || !est.phone || step >= CADENCE.length) continue;\n    const days = Math.floor((Date.now() - new Date(est.sentAt).getTime()) / 86400000);\n    if (Number.isNaN(days) || days < CADENCE[step]) continue;\n    out.push({ json: {\n      estimateId: est.id,\n      firstName: String(est.customerName ?? '').split(' ')[0] || 'there',\n      phone: est.phone,\n      step: step + 1,\n      isLast: step === CADENCE.length - 1,\n    }});\n  }\n}\nreturn out; // no items means nothing is due and the run ends here\n"
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\nconst CADENCE = [2, 5, 10]; // days after the estimate was sent\nconst out = [];\nfor (const item of $input.all()) {\n  for (const est of item.json.results ?? []) {\n    const step = Number(est.followUpsSent ?? 0);\n    if (est.optedOut || !est.phone || step >= CADENCE.length) continue;\n    const days = Math.floor((Date.now() - new Date(est.sentAt).getTime()) / 86400000);\n    if (Number.isNaN(days) || days < CADENCE[step]) continue;\n    out.push({ json: {\n      estimateId: est.id,\n      firstName: String(est.customerName ?? '').split(' ')[0] || 'there',\n      phone: toE164(est.phone) || est.phone, // same format the opt-out store uses\n      step: step + 1,\n      isLast: step === CADENCE.length - 1,\n    }});\n  }\n}\nreturn out; // no items means nothing is due and the run ends here\n"
       },
       "id": "3ddf2fbf-9c33-5390-842d-241fa7d3a2cf",
       "name": "Pick follow ups due today",
@@ -72,12 +72,115 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Pick follow ups due today').item.json.phone }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "f734b62d-0399-5e60-811d-8be9b73a0fb8",
+      "name": "Check opt-out list",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Asks the opt-out store whether this number replied STOP. If the store cannot be reached the text is not sent; the item goes to the dead letter path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d14dd9f0-e6b3-557a-bc0d-c5fc4442065c",
+              "leftValue": "={{ ($json.results ?? []).filter((r) => r.optedOut !== false).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "69e3fb87-5f08-5e76-9a19-67d654f0d79f",
+      "name": "Still allowed to text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "Yes only when the store has no opt-out for the number."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f3991643-d97a-5afc-922e-5b3828703a34",
+              "name": "skipped",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "20e53c37-68b2-58af-af2e-0b71a9571588",
+              "name": "reason",
+              "value": "number is on the SMS opt-out list",
+              "type": "string"
+            },
+            {
+              "id": "14d3ae38-7885-5e47-a3b0-e152ecd5cea6",
+              "name": "phone",
+              "value": "={{ $('Pick follow ups due today').item.json.phone }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c86d1cc9-6cdf-5d99-85c2-63d67866a14a",
+      "name": "Skip text: number opted out",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        300
+      ],
+      "notes": "No text is sent. The reason stays on the item so the execution shows why."
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.SMS_API_URL }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ to: $json.phone, from: $env.BUSINESS_PHONE, body: $json.isLast ? `Hi ${$json.firstName}, last note from ${$env.BUSINESS_NAME} about your estimate. If the timing is not right, no problem. Reply any time and we will pick it back up.` : `Hi ${$json.firstName}, it is ${$env.BUSINESS_NAME}. Any questions on the estimate we sent? Happy to walk through it or adjust the scope.` }) }}",
+        "jsonBody": "={{ JSON.stringify({ to: $('Pick follow ups due today').item.json.phone, from: $env.BUSINESS_PHONE, body: $('Pick follow ups due today').item.json.isLast ? `Hi ${$('Pick follow ups due today').item.json.firstName}, last note from ${$env.BUSINESS_NAME} about your estimate. If the timing is not right, no problem. Reply any time and we will pick it back up. Reply STOP to opt out.` : `Hi ${$('Pick follow ups due today').item.json.firstName}, it is ${$env.BUSINESS_NAME}. Any questions on the estimate we sent? Happy to walk through it or adjust the scope. Reply STOP to opt out.` }) }}",
         "options": {
           "timeout": 15000
         }
@@ -87,8 +190,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        720,
-        300
+        1200,
+        500
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -120,7 +223,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        960,
+        1440,
         300
       ],
       "retryOnFail": true,
@@ -185,7 +288,7 @@
       "typeVersion": 3.4,
       "position": [
         480,
-        560
+        760
       ],
       "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
     },
@@ -208,7 +311,7 @@
       "typeVersion": 4.2,
       "position": [
         720,
-        560
+        760
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -239,7 +342,7 @@
       "typeVersion": 4.2,
       "position": [
         960,
-        560
+        760
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -248,6 +351,42 @@
     }
   ],
   "connections": {
+    "Check opt-out list": {
+      "main": [
+        [
+          {
+            "node": "Still allowed to text?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still allowed to text?": {
+      "main": [
+        [
+          {
+            "node": "Send follow up text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip text: number opted out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Weekdays at 9am": {
       "main": [
         [
@@ -281,7 +420,7 @@
       "main": [
         [
           {
-            "node": "Send follow up text",
+            "node": "Check opt-out list",
             "type": "main",
             "index": 0
           }

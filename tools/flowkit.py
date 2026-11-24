@@ -1,8 +1,9 @@
 """A small builder for n8n workflow JSON.
 
-The ten workflows share one reliability pattern (retry, error output, dead
-letter, alert). Writing that by hand ten times invites drift, so the specs in
-specs.py describe only what is different and this module adds the shared tail.
+The workflows share one reliability pattern (retry, error output, dead letter,
+alert) and one texting rule (look the number up in the opt-out store before any
+customer text). Writing that by hand in every file invites drift, so the specs
+in specs.py describe only what is different and this module adds the shared parts.
 """
 
 from __future__ import annotations
@@ -20,6 +21,13 @@ DL_BUILD = "Dead letter: build record"
 DL_STORE = "Dead letter: store failed item"
 DL_ALERT = "Dead letter: alert owner"
 
+OPT_OUT_LINE = "Reply STOP to opt out."
+OPT_OUT_LOOKUP = "Check opt-out list"
+OPT_OUT_GATE = "Still allowed to text?"
+OPT_OUT_SKIP = "Skip text: number opted out"
+# An entry in the store counts unless it says optedOut: false (a number that opted back in).
+OPTED_OUT_COUNT = "($json.results ?? []).filter((r) => r.optedOut !== false).length"
+
 # Every environment variable the library reads, with the text used in docs and .env.example.
 ENV = {
     "BUSINESS_NAME": ("Sample Home Services", "Name used in customer facing messages"),
@@ -35,6 +43,7 @@ ENV = {
     "EMAIL_API_URL": ("https://email.example.com/api/send", "Endpoint that sends one email"),
     "TEAM_CHAT_WEBHOOK_URL": ("https://chat.example.com/hooks/office", "Incoming webhook for the office channel"),
     "ALERT_WEBHOOK_URL": ("https://chat.example.com/hooks/alerts", "Incoming webhook for the alerts channel"),
+    "OPT_OUT_URL": ("https://ops.example.com/api/sms-opt-outs", "Base URL of the SMS opt-out store"),
     "DEAD_LETTER_URL": ("https://ops.example.com/api/dead-letters", "Endpoint that stores failed items for replay"),
 }
 
@@ -140,6 +149,37 @@ class Flow:
         if cred:
             extra["credentials"] = {"httpHeaderAuth": {"id": CREDENTIAL_PLACEHOLDER, "name": cred}}
         return self._add(name, "n8n-nodes-base.httpRequest", 4.2, params, note, **extra)
+
+    def record(self, name: str, fields: list[tuple[str, Any, str]], note: str) -> str:
+        """A Set node that leaves a few named fields on the item, used to record why a step was skipped."""
+        return self._add(name, "n8n-nodes-base.set", 3.4, {
+            "assignments": {"assignments": [
+                {"id": _uid(self.slug, name, key), "name": key, "value": value, "type": kind}
+                for key, value, kind in fields]},
+            "options": {},
+        }, note)
+
+    def opt_out_gate(self, phone: str) -> tuple[str, str, str]:
+        """Lookup in the opt-out store, an If node and a skip node. Returns their names.
+
+        Wire the node before the text into the lookup and the gate into the text node.
+        `phone` is a JavaScript expression that is valid at this point in the flow.
+        """
+        lookup = self.http(OPT_OUT_LOOKUP, "POST", "={{ $env.OPT_OUT_URL }}/search",
+                           "Asks the opt-out store whether this number replied STOP. If the store cannot be "
+                           "reached the text is not sent; the item goes to the dead letter path.",
+                           body="{ phone: " + phone + " }", cred="Opt-out store")
+        gate = self.check(OPT_OUT_GATE, "={{ " + OPTED_OUT_COUNT + " }}",
+                          "Yes only when the store has no opt-out for the number.",
+                          op="equals", right=0, kind="number")
+        skip = self.record(OPT_OUT_SKIP, [
+            ("skipped", True, "boolean"),
+            ("reason", "number is on the SMS opt-out list", "string"),
+            ("phone", "={{ " + phone + " }}", "string"),
+        ], "No text is sent. The reason stays on the item so the execution shows why.")
+        self.chain(lookup, gate)
+        self.link(gate, skip, 1)
+        return lookup, gate, skip
 
     # ------------------------------------------------------------------ wiring
 

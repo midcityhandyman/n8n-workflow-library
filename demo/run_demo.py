@@ -2,9 +2,9 @@
 
     python demo/run_demo.py
 
-1. Validates the ten workflows.
+1. Validates the eleven workflows.
 2. Prints the main path and every failure path for two of them.
-3. Breaks a copy of one workflow in twelve realistic ways and shows the validator catching each.
+3. Breaks a copy of one workflow in fourteen realistic ways and shows the validator catching each.
 """
 
 from __future__ import annotations

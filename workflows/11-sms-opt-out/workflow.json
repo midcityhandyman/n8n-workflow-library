@@ -1,0 +1,558 @@
+{
+  "name": "SMS Opt-Out",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "inbound-sms",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "ac8a8ead-b1e3-5b76-81f1-88a40ccdb944",
+      "name": "Inbound SMS webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "0a613614-dc25-5e9d-b318-f6c68b523e3f",
+      "notes": "Receives one inbound text message."
+    },
+    {
+      "parameters": {
+        "jsCode": "const toE164 = (raw) => {\n  const digits = String(raw ?? '').replace(/\\D/g, '');\n  if (digits.length === 10) return `+1${digits}`;\n  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;\n  return '';\n};\n\nconst OPT_OUT = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'];\nconst OPT_IN = ['START', 'UNSTOP'];\nreturn $input.all().map((item) => {\n  const body = item.json.body ?? item.json;\n  const from = toE164(body.from);\n  // The whole message must be the keyword. Case, spaces and punctuation are ignored.\n  const word = String(body.text ?? '').toUpperCase().replace(/[^A-Z]/g, '');\n  const action = OPT_OUT.includes(word) ? 'opt_out' : OPT_IN.includes(word) ? 'opt_in' : 'none';\n  return { json: {\n    messageId: String(body.messageId ?? ''),\n    from,\n    keyword: action === 'none' ? '' : word,\n    action,\n    isKeyword: action !== 'none',\n    hasSender: from !== '',\n  }};\n});\n"
+      },
+      "id": "6b33584e-18c9-5e5f-b72e-bf22a3fbeb42",
+      "name": "Classify reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Decides whether the message is an opt-out keyword, an opt-in keyword or neither."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "057ae387-d57b-50be-9f44-28e242f79aa2",
+              "leftValue": "={{ $json.isKeyword }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f20b02a9-87a4-5c74-a6c5-abdc6787670b",
+      "name": "Opt-out or opt-in keyword?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Ordinary replies stop here."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "69861e69-13eb-56b1-b338-396322e72d8e",
+              "leftValue": "={{ $json.hasSender }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "983a53a7-a058-562b-87a3-d133f51ce2da",
+      "name": "Sender number usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        300
+      ],
+      "notes": "A keyword from a number that cannot be read goes to the dead letter path so a person can act on it."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.from }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "894c31ac-995e-50f0-bef7-a0ba79693a29",
+      "name": "Look up current status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Reads the number's current entry so a repeat keyword does not trigger a second confirmation."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c58536a1-2cf8-53e2-b09a-f4e383800337",
+              "leftValue": "={{ (($json.results ?? []).filter((r) => r.optedOut !== false).length > 0) !== ($('Classify reply').item.json.action === 'opt_out') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "521531a6-ff2e-56a0-9f28-52134164dbb1",
+      "name": "Does the status change?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        300
+      ],
+      "notes": "Yes when a STOP arrives for a number that is not opted out, or a START for one that is."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPT_OUT_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $('Classify reply').item.json.from, optedOut: $('Classify reply').item.json.action === 'opt_out', keyword: $('Classify reply').item.json.keyword, source: 'sms_reply', messageId: $('Classify reply').item.json.messageId, changedAt: $now.toISO() }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "385d0a1c-d217-5b8c-8bbf-9a719b512fff",
+      "name": "Record opt-out status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Opt-out store"
+        }
+      },
+      "notes": "Creates or updates the entry the other workflows read before texting."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMS_API_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Classify reply').item.json.from, from: $env.BUSINESS_PHONE, body: $('Classify reply').item.json.action === 'opt_out' ? `You are unsubscribed from ${$env.BUSINESS_NAME} texts and will get no more messages. Reply START to resubscribe.` : `You are resubscribed to ${$env.BUSINESS_NAME} texts. Reply STOP to opt out.` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ff9022e8-ea2d-5376-9b62-1de078933f72",
+      "name": "Send confirmation text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "SMS gateway"
+        }
+      },
+      "notes": "Confirms the change to the sender, once."
+    },
+    {
+      "parameters": {},
+      "id": "e73325f4-83fd-5694-95ee-10ebe1560680",
+      "name": "Not an opt-out keyword",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        720,
+        500
+      ],
+      "notes": "Ordinary replies are not this workflow's job."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "9886e547-2362-517a-a0fe-f3edff913db4",
+              "name": "skipped",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "4a4b55bc-2e8d-53a3-bcb5-26e09b0a0118",
+              "name": "reason",
+              "value": "status already recorded, no second confirmation",
+              "type": "string"
+            },
+            {
+              "id": "1bfa0503-c4b8-5ab2-9bd8-534bcff24d4f",
+              "name": "phone",
+              "value": "={{ $('Classify reply').item.json.from }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ce7d2800-2244-5825-971a-0230584b3c71",
+      "name": "Skip confirmation: status unchanged",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1440,
+        500
+      ],
+      "notes": "A repeat STOP or START. Nothing is written and nothing is sent."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d3888961-f4a6-5bd3-9731-e746cf826fab",
+              "name": "workflow",
+              "value": "={{ $workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "136b5908-ced2-53b8-99ad-7cff59a7bb5c",
+              "name": "executionId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "7086d761-c4e7-532a-b5b5-c4bcd3d6b839",
+              "name": "failedNode",
+              "value": "={{ $prevNode.name }}",
+              "type": "string"
+            },
+            {
+              "id": "96b07e7a-4f47-54bb-9075-6edddb8128de",
+              "name": "error",
+              "value": "={{ typeof $json.error === 'string' ? $json.error : ($json.error?.message ?? 'rejected by validation') }}",
+              "type": "string"
+            },
+            {
+              "id": "fefd5321-28db-5e01-b619-34d0f676c531",
+              "name": "payload",
+              "value": "={{ JSON.stringify({ ...$json, error: undefined }) }}",
+              "type": "string"
+            },
+            {
+              "id": "e50607eb-8988-59d9-ac5e-4504aadbf8e1",
+              "name": "failedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "521be658-076d-520f-97bf-c8b5b64638a6",
+      "name": "Dead letter: build record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        760
+      ],
+      "notes": "Shapes one record per failed item: which workflow, which node, why, and the item itself so it can be replayed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DEAD_LETTER_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "abb4f3c0-31af-5cce-a9b4-24016ff521e0",
+      "name": "Dead letter: store failed item",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Dead letter store"
+        }
+      },
+      "notes": "Stores the record. Continues even if the store is down so the alert below still goes out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `[${$('Dead letter: build record').item.json.workflow}] failed at ${$('Dead letter: build record').item.json.failedNode}: ${$('Dead letter: build record').item.json.error} (execution ${$('Dead letter: build record').item.json.executionId})` }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "9b8aa036-93f0-554b-9bfe-4679bac8903d",
+      "name": "Dead letter: alert owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        760
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Posts to the alerts channel. If this also fails the execution fails and the error workflow takes over."
+    }
+  ],
+  "connections": {
+    "Inbound SMS webhook": {
+      "main": [
+        [
+          {
+            "node": "Classify reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify reply": {
+      "main": [
+        [
+          {
+            "node": "Opt-out or opt-in keyword?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Opt-out or opt-in keyword?": {
+      "main": [
+        [
+          {
+            "node": "Sender number usable?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not an opt-out keyword",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sender number usable?": {
+      "main": [
+        [
+          {
+            "node": "Look up current status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up current status": {
+      "main": [
+        [
+          {
+            "node": "Does the status change?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Does the status change?": {
+      "main": [
+        [
+          {
+            "node": "Record opt-out status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip confirmation: status unchanged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record opt-out status": {
+      "main": [
+        [
+          {
+            "node": "Send confirmation text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send confirmation text": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Dead letter: build record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: build record": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: store failed item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead letter: store failed item": {
+      "main": [
+        [
+          {
+            "node": "Dead letter: alert owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": "REPLACE_WITH_ERROR_WORKFLOW_ID"
+  },
+  "pinData": {},
+  "tags": []
+}

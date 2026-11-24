@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "demo"))
 from breakages import BREAKAGES  # noqa: E402
 from n8n_validator import graph, render, validate_file, validate_workflow  # noqa: E402
 from n8n_validator.__main__ import main as cli  # noqa: E402
+from n8n_validator import checks  # noqa: E402
 from n8n_validator.checks import RULES  # noqa: E402
 
 GOOD = json.loads((ROOT / "workflows/01-lead-intake/workflow.json").read_text(encoding="utf-8"))
@@ -46,7 +47,8 @@ class BreakageTests(unittest.TestCase):
 
     def test_breakages_cover_every_rule_family(self):
         covered = {expected for _, expected, _ in BREAKAGES}
-        self.assertTrue({"ERR-01", "ERR-02", "ERR-03", "ERR-04", "CRED-01", "CRED-02", "CRED-03"} <= covered)
+        self.assertTrue({"ERR-01", "ERR-02", "ERR-03", "ERR-04", "CRED-01", "CRED-02", "CRED-03",
+                         "SMS-01", "SMS-02"} <= covered)
         self.assertTrue(covered <= set(RULES))
 
 
@@ -189,6 +191,127 @@ class CredentialTests(unittest.TestCase):
         self.assertNotIn(fake, messages)
 
 
+def load(folder):
+    return json.loads((ROOT / "workflows" / folder / "workflow.json").read_text(encoding="utf-8"))
+
+
+def node_named(wf, name):
+    return next(n for n in wf["nodes"] if n["name"] == name)
+
+
+def sms_findings(wf) -> list[str]:
+    return [str(f) for f in validate_workflow(wf) if f.rule.startswith("SMS-")]
+
+
+class SmsTests(unittest.TestCase):
+    """Planted violations of the two texting rules. Each starts from a shipped workflow that is clean."""
+
+    def setUp(self):
+        self.lead = copy.deepcopy(GOOD)
+        self.missed = load("02-missed-call-text-back")
+        self.optout = load("11-sms-opt-out")
+        for wf in (self.lead, self.missed, self.optout):
+            self.assertEqual(sms_findings(wf), [])
+
+    def body(self, wf, name):
+        return node_named(wf, name)["parameters"]["jsonBody"]
+
+    def set_body(self, wf, name, text):
+        node_named(wf, name)["parameters"]["jsonBody"] = text
+
+    def test_missing_opt_out_line_is_red(self):
+        name = "Text acknowledgement to lead"
+        self.set_body(self.lead, name, self.body(self.lead, name).replace(" Reply STOP to opt out.", ""))
+        (finding,) = sms_findings(self.lead)
+        self.assertTrue(finding.startswith(f"SMS-01 [{name}]: 1 of 1 message variants"), finding)
+
+    def test_line_missing_from_one_branch_of_a_ternary_is_red(self):
+        name = "Send text back"
+        body = self.body(self.missed, name)
+        self.assertEqual(body.count("Reply STOP to opt out."), 2)
+        self.set_body(self.missed, name, body.replace(" Reply STOP to opt out.", "", 1))
+        (finding,) = sms_findings(self.missed)
+        self.assertIn("SMS-01 [Send text back]: 1 of 2 message variants", finding)
+
+    def test_similar_wording_does_not_count(self):
+        name = "Text acknowledgement to lead"
+        for swap in ("Text us any time.", "Reply START to resubscribe.", "We never stop caring."):
+            wf = copy.deepcopy(self.lead)
+            self.set_body(wf, name, self.body(wf, name).replace("Reply STOP to opt out.", swap))
+            self.assertEqual(len(sms_findings(wf)), 1, swap)
+
+    def test_message_without_fixed_wording_is_red(self):
+        self.set_body(self.lead, "Text acknowledgement to lead",
+                      "={{ JSON.stringify({ to: $json.phone, from: $env.BUSINESS_PHONE, body: $json.message }) }}")
+        self.assertIn("no fixed wording", " ".join(sms_findings(self.lead)))
+        self.set_body(self.lead, "Text acknowledgement to lead", "={{ JSON.stringify({ to: $json.phone }) }}")
+        self.assertIn("cannot find the message text", " ".join(sms_findings(self.lead)))
+
+    def test_unsubscribe_confirmation_may_say_start_instead(self):
+        texts = checks.message_texts(self.body(self.optout, "Send confirmation text"))
+        self.assertEqual(len(texts), 2)
+        self.assertIn("Reply START to resubscribe.", texts[0])
+        self.assertNotIn("STOP", texts[0])
+        self.assertTrue(all(checks.has_opt_out_line(t) for t in texts))
+
+    def test_owner_text_is_not_customer_facing(self):
+        wf = load("10-error-alerting")
+        owner = node_named(wf, "Text owner")
+        self.assertTrue(checks.is_sms_node(owner))
+        self.assertFalse(checks.is_customer_sms(owner))
+        self.assertEqual(sms_findings(wf), [])
+        # the same node pointed at a customer number is held to the rules
+        owner["parameters"]["jsonBody"] = owner["parameters"]["jsonBody"].replace("$env.OWNER_PHONE", "$json.phone")
+        self.assertEqual({f.split(" ")[0] for f in sms_findings(wf)}, {"SMS-01", "SMS-02"})
+
+    def test_wire_around_the_gate_is_red(self):
+        self.lead["connections"]["Has a mobile number?"]["main"][0].append(
+            {"node": "Text acknowledgement to lead", "type": "main", "index": 0})
+        (finding,) = sms_findings(self.lead)
+        self.assertTrue(finding.startswith("SMS-02 [Text acknowledgement to lead]: can be reached without"), finding)
+
+    def test_text_on_the_no_output_of_the_gate_is_red(self):
+        outs = self.missed["connections"]["Still allowed to text?"]["main"]
+        outs[1].append({"node": "Send text back", "type": "main", "index": 0})
+        self.assertIn("SMS-02 [Send text back]: can be reached without", " ".join(sms_findings(self.missed)))
+
+    def test_lookup_removed_is_red(self):
+        wf = self.missed
+        wf["nodes"] = [n for n in wf["nodes"] if n["name"] != "Check opt-out list"]
+        del wf["connections"]["Check opt-out list"]
+        wf["connections"]["First miss this hour?"]["main"][0] = [
+            {"node": "Still allowed to text?", "type": "main", "index": 0}]
+        self.assertEqual(rules_for(wf), {"SMS-02"})
+
+    def test_lookup_that_does_not_read_the_opt_out_store_is_red(self):
+        node_named(self.missed, "Check opt-out list")["parameters"]["url"] = "={{ $env.CRM_BASE_URL }}/contacts/search"
+        self.assertEqual(rules_for(self.missed), {"SMS-02"})
+
+    def test_skip_without_a_recorded_reason_is_red(self):
+        unplugged = copy.deepcopy(self.missed)
+        unplugged["connections"]["Still allowed to text?"]["main"][1] = []
+        unplugged["nodes"] = [n for n in unplugged["nodes"] if n["name"] != "Skip text: number opted out"]
+        self.assertIn("the no output is not connected", " ".join(sms_findings(unplugged)))
+
+        skip = node_named(self.missed, "Skip text: number opted out")
+        skip["parameters"]["assignments"]["assignments"] = [
+            a for a in skip["parameters"]["assignments"]["assignments"] if a["name"] != "reason"]
+        self.assertIn("does not set a 'reason' field", " ".join(sms_findings(self.missed)))
+
+    def test_workflow_without_customer_texts_is_not_checked(self):
+        wf = load("04-invoice-reminder")
+        self.assertEqual(checks.opt_out_gates(wf), [])
+        self.assertEqual(sms_findings(wf), [])
+
+    def test_message_text_scanner(self):
+        expr = ("={{ JSON.stringify({ to: $('A node').item.json.phone, body: $('A node').item.json.late === 'yes' "
+                "? `Hi ${name.split(' ')[0] || 'there'}, {late}. Reply STOP to opt out.` : 'On time, see you. Reply STOP to opt out.', "
+                "from: 'not a message' }) }}")
+        self.assertEqual(checks.message_texts(expr), [
+            "Hi ${name.split(' ')[0] || 'there'}, {late}. Reply STOP to opt out.",
+            "On time, see you. Reply STOP to opt out."])
+
+
 class FileAndCliTests(unittest.TestCase):
     def run_cli(self, *args):
         out = io.StringIO()
@@ -206,7 +329,7 @@ class FileAndCliTests(unittest.TestCase):
     def test_cli_exit_codes(self):
         code, text = self.run_cli("validate", str(ROOT / "workflows"))
         self.assertEqual(code, 0, text)
-        self.assertIn("10 of 10 workflows passed", text)
+        self.assertIn("11 of 11 workflows passed, 18 rules each", text)
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(self.run_cli("validate", tmp)[0], 2)
             wf = copy.deepcopy(GOOD)

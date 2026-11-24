@@ -144,6 +144,40 @@ class CodeNodeTests(unittest.TestCase):
         self.assertTrue(events[1]["hasEvent"])
         self.assertTrue(events[1]["event"]["title"].startswith("CANCELLED: "))
 
+    def test_opt_out_keywords(self):
+        def classify(text, sender="+15555550142"):
+            (out,) = run_code("11-sms-opt-out", "Classify reply", [{"body": {"from": sender, "text": text}}])
+            return out
+
+        self.assertEqual(classify(sample("11-sms-opt-out")["text"])["action"], "opt_out")
+        for word in ("STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"):
+            for text in (word, word.lower(), word.title(), f"  {word}\n", f"\t{word.lower()} ", f"{word}."):
+                out = classify(text)
+                self.assertEqual((out["action"], out["keyword"], out["isKeyword"]), ("opt_out", word, True), repr(text))
+        for word in ("START", "UNSTOP"):
+            for text in (word, word.lower(), f" {word.title()}  "):
+                out = classify(text)
+                self.assertEqual((out["action"], out["keyword"]), ("opt_in", word), repr(text))
+        self.assertEqual(classify("stop all")["keyword"], "STOPALL")
+        for text in ("", "ok thanks", "please stop calling me", "stopped by earlier", "can we start Monday?",
+                     "the end of the week works", "restart", "yes"):
+            out = classify(text)
+            self.assertEqual((out["action"], out["keyword"], out["isKeyword"]), ("none", "", False), repr(text))
+
+    def test_opt_out_sender_is_normalized(self):
+        (out,) = run_code("11-sms-opt-out", "Classify reply", [{"from": "(555) 555-0142", "text": "stop"}])
+        self.assertEqual((out["from"], out["hasSender"]), ("+15555550142", True))
+        (bad,) = run_code("11-sms-opt-out", "Classify reply", [{"from": "short code", "text": "STOP"}])
+        self.assertEqual((bad["from"], bad["hasSender"], bad["isKeyword"]), ("", False, True))
+
+    def test_phones_are_normalized_before_the_opt_out_lookup(self):
+        est = {"id": "e1", "customerName": "Alex Sample", "phone": "555-555-0142", "sentAt": days_ago(3), "followUpsSent": 0}
+        (due,) = run_code("03-estimate-follow-up", "Pick follow ups due today", [{"results": [est]}])
+        self.assertEqual(due["phone"], "+15555550142")
+        job = {**sample("05-review-request"), "phone": "1 (555) 555-0142"}
+        (out,) = run_code("05-review-request", "Check eligibility", [{"body": job}])
+        self.assertEqual((out["phone"], out["eligible"]), ("+15555550142", True))
+
     def test_error_alert_format(self):
         (alert,) = run_code("10-error-alerting", "Format alert", [sample("10-error-alerting")])
         self.assertTrue(alert["urgent"])
@@ -151,6 +185,9 @@ class CodeNodeTests(unittest.TestCase):
         (trigger_failure,) = run_code("10-error-alerting", "Format alert", [
             {"trigger": {"error": {"message": "webhook could not register"}}, "workflow": {"name": "Calendar Sync"}}])
         self.assertEqual((trigger_failure["lastNode"], trigger_failure["urgent"]), ("(trigger)", False))
+        (opt_out_failure,) = run_code("10-error-alerting", "Format alert", [
+            {"execution": {"id": "9", "error": {"message": "x"}}, "workflow": {"name": "SMS Opt-Out"}}])
+        self.assertTrue(opt_out_failure["urgent"], "a lost STOP has to wake someone up")
         self.assertIn("webhook could not register", trigger_failure["text"])
 
 

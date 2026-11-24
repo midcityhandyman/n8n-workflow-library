@@ -78,6 +78,17 @@ def unbalanced_expression(wf: Workflow) -> None:
     _first_http(wf)["parameters"]["url"] = "={{ $env.CRM_BASE_URL }/contacts"
 
 
+def delete_opt_out_line(wf: Workflow) -> None:
+    node = _node(wf, "Text acknowledgement to lead")
+    node["parameters"]["jsonBody"] = node["parameters"]["jsonBody"].replace(" Reply STOP to opt out.", "")
+
+
+def bypass_opt_out_check(wf: Workflow) -> None:
+    # the kind of shortcut someone draws in the editor "just to test" and forgets to remove
+    wf["connections"]["Has a mobile number?"]["main"][0].append(
+        {"node": "Text acknowledgement to lead", "type": "main", "index": 0})
+
+
 BREAKAGES: list[tuple[str, str, Callable[[Workflow], None]]] = [
     ("Retries switched off on an API call", "ERR-01", remove_retries),
     ("Error output left unconnected", "ERR-02", unplug_error_output),
@@ -91,4 +102,6 @@ BREAKAGES: list[tuple[str, str, Callable[[Workflow], None]]] = [
     ("Two nodes share a name", "STRUCT-03", duplicate_node_name),
     ("Exported while active with pinned test data", "STRUCT-07", leave_pinned_data),
     ("Expression with a missing brace", "STRUCT-08", unbalanced_expression),
+    ("Opt-out line edited out of a customer text", "SMS-01", delete_opt_out_line),
+    ("Shortcut wired around the opt-out check", "SMS-02", bypass_opt_out_check),
 ]

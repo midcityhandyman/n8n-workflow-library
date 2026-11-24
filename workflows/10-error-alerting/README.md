@@ -1,6 +1,6 @@
 # 10 Error Alerting
 
-The last line of defence for the other nine. Set it as the error workflow on every workflow and any failed execution, including a trigger that could not start, becomes a message in the alerts channel with the workflow, the node and a link to the execution. Failures in customer facing workflows also text the owner. If the alert itself cannot be delivered it is stored and emailed instead.
+The last line of defence for the other ten. Set it as the error workflow on every workflow and any failed execution, including a trigger that could not start, becomes a message in the alerts channel with the workflow, the node and a link to the execution. Failures in customer facing workflows also text the owner. If the alert itself cannot be delivered it is stored and emailed instead.
 
 ## Trigger
 
@@ -104,11 +104,11 @@ Synthetic data, also saved as `sample.json`.
 
 1. In the n8n editor open a new workflow, then the three dot menu > Import from File, and pick `workflow.json`. On a self hosted server `n8n import:workflow --input=workflow.json` does the same.
 2. Create the Header Auth credentials named above and select them on the nodes that show a warning.
-3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or replace the `$env` expressions with n8n Variables.
-4. Save and publish it (activate on n8n 1.x), then pick it under Settings > Error workflow in each of the other nine.
+3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`. On a plan that has n8n Variables you can instead replace each `$env.NAME` with `$vars.NAME`; the main README explains the trade off.
+4. Save and publish it (activate on n8n 1.x), then pick it under Settings > Error workflow in every other workflow of the library.
 
 ## Tuning notes
 
 - `URGENT` in `Format alert` lists the workflows that should also text the owner.
 - This workflow does not name an error workflow of its own. That would loop.
-- Import this workflow first and copy its id into the other nine.
+- Import this workflow first and copy its id into the other ten.

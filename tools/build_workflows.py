@@ -97,11 +97,12 @@ def readme(flow: flowkit.Flow, wf: dict) -> str:
         "On a self hosted server `n8n import:workflow --input=workflow.json` does the same.",
         "2. Create the Header Auth credentials named above and select them on the nodes that show a warning.",
         "3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, "
-        "so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or replace the `$env` expressions with n8n Variables.",
+        "so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`. On a plan that has n8n Variables you can instead "
+        "replace each `$env.NAME` with `$vars.NAME`; the main README explains the trade off.",
     ]
     if flow.is_error_workflow:
         lines.append("4. Save and publish it (activate on n8n 1.x), then pick it under Settings > Error workflow "
-                     "in each of the other nine.")
+                     "in every other workflow of the library.")
     else:
         lines.append("4. Under Settings > Error workflow pick the imported `Error Alerting` workflow "
                      f"(the file ships with the placeholder `{flowkit.ERROR_WORKFLOW_PLACEHOLDER}`).")
