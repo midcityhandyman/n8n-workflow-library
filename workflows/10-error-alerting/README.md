@@ -102,9 +102,10 @@ Synthetic data, also saved as `sample.json`.
 
 ## Import
 
-1. In n8n choose Import from File and pick `workflow.json`.
-2. Select your credentials on the nodes that show a warning.
-3. Save, activate, and copy this workflow's id into `settings.errorWorkflow` of the other nine (Settings > Error workflow in the editor).
+1. In the n8n editor open a new workflow, then the three dot menu > Import from File, and pick `workflow.json`. On a self hosted server `n8n import:workflow --input=workflow.json` does the same.
+2. Create the Header Auth credentials named above and select them on the nodes that show a warning.
+3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or replace the `$env` expressions with n8n Variables.
+4. Save and publish it (activate on n8n 1.x), then pick it under Settings > Error workflow in each of the other nine.
 
 ## Tuning notes
 

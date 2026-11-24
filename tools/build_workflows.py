@@ -93,16 +93,19 @@ def readme(flow: flowkit.Flow, wf: dict) -> str:
         "",
         "## Import",
         "",
-        "1. In n8n choose Import from File and pick `workflow.json`.",
-        "2. Select your credentials on the nodes that show a warning.",
+        "1. In the n8n editor open a new workflow, then the three dot menu > Import from File, and pick `workflow.json`. "
+        "On a self hosted server `n8n import:workflow --input=workflow.json` does the same.",
+        "2. Create the Header Auth credentials named above and select them on the nodes that show a warning.",
+        "3. Set the environment variables above on the n8n host. n8n 2.x blocks `$env` in nodes by default, "
+        "so also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or replace the `$env` expressions with n8n Variables.",
     ]
     if flow.is_error_workflow:
-        lines.append("3. Save, activate, and copy this workflow's id into `settings.errorWorkflow` of the other nine "
-                     "(Settings > Error workflow in the editor).")
+        lines.append("4. Save and publish it (activate on n8n 1.x), then pick it under Settings > Error workflow "
+                     "in each of the other nine.")
     else:
-        lines.append("3. Under Settings > Error workflow pick the imported `Error Alerting` workflow "
+        lines.append("4. Under Settings > Error workflow pick the imported `Error Alerting` workflow "
                      f"(the file ships with the placeholder `{flowkit.ERROR_WORKFLOW_PLACEHOLDER}`).")
-        lines.append("4. Run it once with the sample input, then activate it.")
+        lines.append("5. Run it once with the sample input, then publish it (activate on n8n 1.x).")
     lines += ["", "## Tuning notes", "", *[f"- {note}" for note in flow.tuning], ""]
     return "\n".join(lines)
 

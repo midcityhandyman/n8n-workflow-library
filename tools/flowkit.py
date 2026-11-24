@@ -167,7 +167,7 @@ class Flow:
             ("failedNode", "={{ $prevNode.name }}"),
             ("error", "={{ typeof $json.error === 'string' ? $json.error : "
                       "($json.error?.message ?? 'rejected by validation') }}"),
-            ("payload", "={{ JSON.stringify($json) }}"),
+            ("payload", "={{ JSON.stringify({ ...$json, error: undefined }) }}"),
             ("failedAt", "={{ $now.toISO() }}"),
         ]
         self._add(DL_BUILD, "n8n-nodes-base.set", 3.4, {

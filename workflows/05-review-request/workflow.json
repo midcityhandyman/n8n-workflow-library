@@ -177,7 +177,7 @@
             {
               "id": "ade51d0c-0e02-50f2-b543-705997275d04",
               "name": "payload",
-              "value": "={{ JSON.stringify($json) }}",
+              "value": "={{ JSON.stringify({ ...$json, error: undefined }) }}",
               "type": "string"
             },
             {
